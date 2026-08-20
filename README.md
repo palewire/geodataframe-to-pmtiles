@@ -6,13 +6,23 @@ subprocesses, no temporary files.
 
 ## Install
 
+After version 0.1.0 is published to PyPI, install it with:
+
 ```sh
 pip install geodataframe-to-pmtiles
 ```
 
-> **Note:** The library itself is pure Python, but `write()` needs a
+Until then, install a source checkout:
+
+```sh
+git clone https://github.com/palewire/geodataframe-to-pmtiles.git
+cd geodataframe-to-pmtiles
+uv sync
+```
+
+> **Note:** The library itself is pure Python, but `gpm.write()` needs a
 > native GDAL runtime with the PMTiles driver available. The package imports
-> without GDAL; calling the writer without it raises a clear `RuntimeError`.
+> without GDAL; calling `gpm.write()` without it raises a clear `RuntimeError`.
 > In CI we install GDAL from conda-forge. Locally, install GDAL separately via
 > conda-forge, Homebrew, or your operating system package manager before
 > writing PMTiles archives.
@@ -22,13 +32,13 @@ pip install geodataframe-to-pmtiles
 ```python
 import geopandas as gpd
 from pathlib import Path
-from geodataframe_to_pmtiles import write
+import geodataframe_to_pmtiles as gpm
 
 # Any explicit CRS is accepted — reprojection to EPSG:4326 is automatic.
 points = gpd.read_file("points.geojson")
 polygons = gpd.read_file("polys.geojson")
 
-write(
+gpm.write(
     {"points": points, "polygons": polygons},
     Path("output.pmtiles"),
     min_zoom=0,
@@ -40,7 +50,7 @@ write(
 )
 ```
 
-GeoDataFrames passed to `write()` must already carry a CRS. If your
+GeoDataFrames passed to `gpm.write()` must already carry a CRS. If your
 source format does not store CRS metadata, set one before writing:
 
 ```python
@@ -54,7 +64,7 @@ Write to a `BytesIO` stream instead of a file:
 import io
 
 buf = io.BytesIO()
-write({"points": points}, buf)
+gpm.write({"points": points}, buf)
 ```
 
 Write a single GeoDataFrame with an explicit layer name:
@@ -75,21 +85,24 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 
 ## API
 
-See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
-the full API reference.
+The documentation source is in [`docs/`](docs/) and is built in CI. Deployment
+is disabled pending explicit approval and the first deployment; afterward the
+public site will be available at
+`https://palewi.re/docs/geodataframe-to-pmtiles/`. Until then, this README and
+[`docs/api.md`](docs/api.md) provide the current API reference.
 
-### `write` — two call forms
+### `gpm.write` — two call forms
 
 **Mapping form** — multiple named layers:
 
 ```
-write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
+gpm.write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
 ```
 
 **Single-frame form** — one layer with an explicit name:
 
 ```
-write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
+gpm.write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
 ```
 
 | Parameter | Type | Default | Description |

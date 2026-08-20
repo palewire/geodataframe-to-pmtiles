@@ -13,7 +13,7 @@ dependencies = [
     "shapely>=2.0",
     "pmtiles>=3.3,<4",
 ]
-authors = [{ name = "palewire", email = "palewire@users.noreply.github.com" }]
+authors = [{ name = "Pale Wire", email = "palewire@users.noreply.github.com" }]
 description = "Write PMTiles vector archives from one or more GeoPandas GeoDataFrames using GDAL"
 keywords = ["pmtiles", "geopandas", "gdal", "vector-tiles", "geospatial"]
 license = "MIT"
@@ -26,13 +26,17 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: GIS",
+    "Typing :: Typed",
 ]
 
 [project.urls]
-Documentation = "https://palewire.github.io/geodataframe-to-pmtiles/"
+Changelog = "https://github.com/palewire/geodataframe-to-pmtiles/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/palewire/geodataframe-to-pmtiles#readme"
 Source = "https://github.com/palewire/geodataframe-to-pmtiles"
 Issues = "https://github.com/palewire/geodataframe-to-pmtiles/issues"
 
