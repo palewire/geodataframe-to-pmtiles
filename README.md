@@ -34,6 +34,8 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and polygons",
+    on_overflow="error",  # default: reject reported tile-level data loss
+    attribution="© OpenStreetMap contributors",  # optional; stored in TileJSON metadata
 )
 ```
 
@@ -69,6 +71,7 @@ the full API reference.
 | `max_zoom` | `int` | `8` | Archive-wide maximum zoom level (0-22). |
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |
 | `description` | `str` | `""` | Human-readable description in archive metadata. |
+| `attribution` | `str` | `""` | Attribution string stored in TileJSON metadata under `"attribution"`. Unicode and HTML preserved. Omit or pass `""` to skip. |
 | `json_fields` | `Collection[str] \| None` | `None` | Columns to JSON-encode (list/dict values). `None` auto-encodes all; explicit set restricts to named columns only. |
 | `on_overflow` | `"error" \| "unsafe"` | `"error"` | Reject detected GDAL tile-limit actions, or explicitly accept them. |
 | `simplification` | `float \| None` | `None` | Geometry simplification tolerance (tile units). `None` = disabled. |
@@ -130,10 +133,6 @@ alter reported conditions.
 
 ## Known limitations
 
-* **Attribution is not supported** in this POC.  Testing with GDAL 3.12.2 showed
-  that the `CONF` creation option does not write `attribution` to the archive
-  bytes.  The parameter is intentionally absent from the API.  Support will be
-  added when a reliable mechanism is found.
 * **Feature count inflation when reading back**: MVT stores features in every
   intersecting tile; read-back counts exceed input counts.  This is not data loss.
 * **Simplification disabled by default**: pass `simplification=<float>` to enable.

@@ -42,6 +42,8 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and lines layer",
+    attribution="© OpenStreetMap contributors",  # optional TileJSON attribution
+    on_overflow="error",  # default: reject reported tile-level data loss
 )
 ```
 
@@ -144,10 +146,6 @@ alter reported conditions.
 
 ### Known limitations
 
-* **Attribution is not supported in this POC.**  Testing with GDAL 3.12.2 showed
-  that the `CONF` creation option does **not** write an `attribution` key to the
-  raw archive bytes.  The parameter is intentionally absent from the public API.
-  Support will be added when a reliable mechanism is found.
 * **Feature count inflation when reading back.**  The MVT format stores features
   in every intersecting tile; read-back feature counts will exceed input counts.
   This is not data loss.
