@@ -157,6 +157,7 @@ import json
 import math
 import tempfile
 import uuid
+import warnings
 from importlib import import_module
 from io import IOBase
 from pathlib import Path
@@ -788,8 +789,6 @@ def write_pmtiles(
         if violations and on_overflow == "error":
             raise TileOverflowError(violations)
         if violations:
-            import warnings
-
             warnings.warn(
                 "on_overflow='unsafe' allowed GDAL to exceed a tile limit; "
                 "features may be missing or geometry precision may be reduced.",
