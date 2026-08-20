@@ -938,7 +938,7 @@ def _write_impl(
                     count=out_of_bounds,
                 ),
                 UserWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         if not valid_row_indices:
             msg = (
@@ -1018,7 +1018,7 @@ def _write_impl(
                 "on_overflow='unsafe' allowed GDAL to exceed a tile limit; "
                 "features may be missing or geometry precision may be reduced.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         data = _read_vsimem(vsimem_path, gdal)
     finally:

@@ -2208,3 +2208,102 @@ def test_layers_mapping_subclass_accepted() -> None:
     # Should not raise TypeError; will fail later (EmptyLayerError or MissingCRSError) but not on the Mapping check.
     with pytest.raises((MissingCRSError, EmptyLayerError)):
         write(od, io.BytesIO())
+
+
+# ---------------------------------------------------------------------------
+# String output path: GDAL integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_string_output_path_writes_valid_archive(tmp_path: Path) -> None:
+    """write accepts a plain str path and produces a readable PMTiles archive."""
+    from osgeo import gdal
+
+    out_str = str(tmp_path / "string_path.pmtiles")
+    write(
+        {"pts": _points_gdf()},
+        out_str,
+        min_zoom=0,
+        max_zoom=4,
+    )
+
+    out = Path(out_str)
+    assert out.exists(), "output file was not created"
+    assert out.stat().st_size > 0, "output file is empty"
+
+    ds = gdal.OpenEx(out_str, gdal.OF_VECTOR)
+    assert ds is not None, "GDAL could not open the written archive"
+    layer_names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "pts" in layer_names, f"expected layer 'pts', got {layer_names}"
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# Warning provenance: boundary and overflow warnings must point at gpm.write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_out_of_bounds_warning_points_at_write_call(tmp_path: Path) -> None:
+    """Out-of-bounds UserWarning filename is this test file (the gpm.write call site)."""
+    import warnings
+
+    from shapely.geometry import Point
+
+    from geodataframe_to_pmtiles import write
+
+    # GeoDataFrame with one in-bounds and one out-of-bounds point (beyond ~85.051° N).
+    gdf = gpd.GeoDataFrame(
+        {"v": [1, 2]},
+        geometry=[Point(0.0, 10.0), Point(0.0, 89.0)],
+        crs="EPSG:4326",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write({"lyr": gdf}, tmp_path / "provenance_oob.pmtiles", min_zoom=0, max_zoom=0)
+
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert user_warnings, "expected at least one UserWarning for out-of-bounds features"
+    w = user_warnings[0]
+    assert w.filename == __file__, (
+        f"Warning points to {w.filename!r} instead of this test file ({__file__!r}); "
+        "stacklevel in _write_impl may be wrong"
+    )
+
+
+@pytest.mark.integration
+def test_unsafe_overflow_warning_points_at_write_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """on_overflow='unsafe' UserWarning filename is this test file (the gpm.write call site)."""
+    import warnings
+
+    from geodataframe_to_pmtiles import _writer as writer_module
+    from geodataframe_to_pmtiles import write
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write(
+            {"lyr": _points_gdf()},
+            tmp_path / "provenance_overflow.pmtiles",
+            min_zoom=0,
+            max_zoom=0,
+            on_overflow="unsafe",
+        )
+
+    user_warnings = [
+        w
+        for w in caught
+        if issubclass(w.category, UserWarning) and "unsafe" in str(w.message)
+    ]
+    assert user_warnings, "expected UserWarning for unsafe overflow"
+    w = user_warnings[0]
+    assert w.filename == __file__, (
+        f"Warning points to {w.filename!r} instead of this test file ({__file__!r}); "
+        "stacklevel in _write_impl may be wrong"
+    )
