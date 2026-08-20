@@ -24,6 +24,8 @@ from geodataframe_to_pmtiles import (
     write_pmtiles,
 )
 
+from .pmtiles_semantics import read_pmtiles_archive
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -262,24 +264,78 @@ def test_float_properties(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_bool_stored_as_integer(tmp_path: Path) -> None:
-    """Boolean columns are stored as Integer (0/1) because MVT has no bool type."""
-    from osgeo import gdal, ogr
-
-    gdf = gpd.GeoDataFrame(
-        {"flag": [True, False, True]},
-        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
-        crs="EPSG:4326",
-    )
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        pytest.param([True, False, True], [True, False, True], id="python-bool"),
+        pytest.param(
+            np.array([True, False, True], dtype=np.bool_),
+            [True, False, True],
+            id="numpy-bool",
+        ),
+        pytest.param(
+            pd.array([True, False, pd.NA], dtype="boolean"),
+            [True, False, None],
+            id="pandas-nullable-boolean",
+        ),
+        pytest.param(
+            pd.Series([True, None, False], dtype=object),
+            [True, None, False],
+            id="object-bool-null",
+        ),
+        pytest.param([True, True, True], [True, True, True], id="all-true"),
+        pytest.param([False, False, False], [False, False, False], id="all-false"),
+    ],
+)
+def test_boolean_properties_decode_as_native_mvt_booleans(
+    tmp_path: Path,
+    values: object,
+    expected: list[bool | None],
+) -> None:
+    """Official PMTiles and MVT decoders return Python booleans, not integers."""
     out = tmp_path / "bool.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
-    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
-    lyr = ds.GetLayerByIndex(0)
-    fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("flag"))
-    assert fld.GetType() == ogr.OFTInteger
-    values = {feat.GetField("flag") for feat in lyr}
-    assert {0, 1}.issubset(values)
-    ds = None
+    _write_ignore({"lyr": _points_gdf(flag=values)}, out, min_zoom=0, max_zoom=0)
+
+    _, _, layers = read_pmtiles_archive(out)
+    decoded = [
+        feature["properties"].get("flag") for feature in layers["lyr"]["features"]
+    ]
+
+    assert decoded == expected
+    assert all(type(value) is bool for value in decoded if value is not None)
+
+
+@pytest.mark.integration
+def test_numeric_zero_one_properties_remain_integers(tmp_path: Path) -> None:
+    """Numeric binary columns do not acquire the Boolean field subtype."""
+    out = tmp_path / "numeric-binary.pmtiles"
+    _write_ignore({"lyr": _points_gdf(binary=[0, 1, 0])}, out, min_zoom=0, max_zoom=0)
+
+    _, _, layers = read_pmtiles_archive(out)
+    decoded = [
+        feature["properties"].get("binary") for feature in layers["lyr"]["features"]
+    ]
+
+    assert decoded == [0, 1, 0]
+    assert all(type(value) is int for value in decoded)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "values",
+    [
+        [True, 1, False],
+        [np.bool_(True), np.int64(0), np.bool_(False)],
+    ],
+)
+def test_mixed_boolean_and_integer_properties_raise(values: list[object]) -> None:
+    """Mixed Boolean and integer values cannot silently acquire either meaning."""
+    with pytest.raises(UnsupportedPropertyTypeError, match="mixes boolean"):
+        write_pmtiles(
+            {"lyr": _points_gdf(flag=values)},
+            io.BytesIO(),
+            on_overflow="ignore",
+        )
 
 
 @pytest.mark.integration
