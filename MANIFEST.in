@@ -21,4 +21,3 @@ recursive-include .github *
 recursive-include docs *.md *.py Makefile
 recursive-include tests *.py
 include .env.example
-recursive-include .goals *

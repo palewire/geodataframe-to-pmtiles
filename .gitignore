@@ -1,5 +1,6 @@
 # AI stuff
 .claude
+.goals/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -108,3 +109,6 @@ venv.bak/
 
 # pip and uv
 ./build/
+
+# Goal-skill working files (never commit)
+.goals/
