@@ -68,8 +68,9 @@ in-memory format-level operation:
 
 1. The archive bytes from ``/vsimem/`` are parsed with the official
    ``pmtiles.reader.Reader`` and ``pmtiles.tile.serialize_header`` APIs.
-2. The metadata JSON is decoded, the ``"attribution"`` key is set, and the JSON
-   is re-compressed with gzip.
+2. The metadata JSON is decoded from the archive's internal compression format,
+   the ``"attribution"`` key is set, and the JSON is re-encoded with the same
+   format. GZIP output uses a stable header timestamp.
 3. The archive is reassembled in a :class:`io.BytesIO` buffer: the fixed 127-
    byte header (with updated ``metadata_length`` and, if needed, updated
    ``leaf_directory_offset`` / ``tile_data_offset``) is followed by the root
@@ -776,14 +777,25 @@ def _inject_attribution(raw: bytes, attribution: str) -> bytes:
     get_bytes = MemorySource(raw)
     reader = Reader(get_bytes)
     h = reader.header()
-    metadata = reader.metadata()
+    metadata_bytes = get_bytes(h["metadata_offset"], h["metadata_length"])
+    if h["internal_compression"] == Compression.GZIP:
+        metadata_bytes = gzip.decompress(metadata_bytes)
+    elif h["internal_compression"] != Compression.NONE:
+        msg = (
+            "Unsupported PMTiles metadata compression "
+            f"{h['internal_compression'].name!r}; only NONE and GZIP "
+            "metadata can be rewritten safely."
+        )
+        raise RuntimeError(msg)
 
+    metadata = json.loads(metadata_bytes)
     metadata["attribution"] = attribution
 
     # Re-encode the metadata, preserving the original compression scheme.
     meta_json: bytes = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
     if h["internal_compression"] == Compression.GZIP:
-        new_meta_bytes: bytes = gzip.compress(meta_json)
+        # Keep the gzip header stable so repeated writes stay byte-identical.
+        new_meta_bytes: bytes = gzip.compress(meta_json, mtime=0)
     else:
         new_meta_bytes = meta_json
 

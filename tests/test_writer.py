@@ -917,6 +917,38 @@ def _build_pmtiles_archive(
     return buf.getvalue()
 
 
+def _rewrite_metadata_as_raw_json(data: bytes) -> bytes:
+    """Return *data* with raw JSON metadata and NONE internal compression."""
+    from pmtiles.reader import MemorySource, Reader
+    from pmtiles.tile import Compression, serialize_header
+
+    reader = Reader(MemorySource(data))
+    header = reader.header()
+    metadata = reader.metadata()
+    raw_metadata = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+
+    new_header = dict(header)
+    new_header["internal_compression"] = Compression.NONE
+    new_header["metadata_length"] = len(raw_metadata)
+    delta = len(raw_metadata) - header["metadata_length"]
+    if delta:
+        new_header["leaf_directory_offset"] = header["leaf_directory_offset"] + delta
+        new_header["tile_data_offset"] = header["tile_data_offset"] + delta
+
+    out = io.BytesIO()
+    out.write(serialize_header(new_header))
+    out.write(_pmtiles_section(data, header, "root_offset", "root_length"))
+    out.write(raw_metadata)
+    if header["leaf_directory_length"] > 0:
+        out.write(
+            _pmtiles_section(
+                data, header, "leaf_directory_offset", "leaf_directory_length"
+            )
+        )
+    out.write(_pmtiles_section(data, header, "tile_data_offset", "tile_data_length"))
+    return out.getvalue()
+
+
 def _pmtiles_section(
     data: bytes,
     header: dict[str, object],
@@ -1226,6 +1258,103 @@ def test_attribution_preserves_duplicate_tile_entries() -> None:
     assert list(all_tiles(MemorySource(original))) == list(
         all_tiles(MemorySource(patched))
     )
+
+
+@pytest.mark.unit
+def test_inject_attribution_handles_raw_metadata() -> None:
+    """_inject_attribution also works when metadata is stored as raw JSON."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import Compression, zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {
+            "name": "raw",
+            "description": "raw-desc",
+            "vector_layers": [],
+            "unknown": {"nested": ["alpha", 1]},
+        },
+    )
+    raw_original = _rewrite_metadata_as_raw_json(original)
+    original_reader = Reader(MemorySource(raw_original))
+    original_header = original_reader.header()
+    assert original_header["internal_compression"] == Compression.NONE
+    original_meta = original_reader.metadata()
+
+    patched = _inject_attribution(raw_original, "Raw attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_header["internal_compression"] == Compression.NONE
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Raw attribution",
+    }
+    assert list(all_tiles(MemorySource(raw_original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+
+
+@pytest.mark.unit
+def test_inject_attribution_rejects_unsupported_metadata_compression() -> None:
+    """_inject_attribution refuses archives it cannot rewrite safely."""
+    from pmtiles.reader import MemorySource, Reader
+    from pmtiles.tile import Compression, serialize_header, zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {"name": "bad", "description": "", "vector_layers": []},
+    )
+    reader = Reader(MemorySource(original))
+    header = dict(reader.header())
+    header["internal_compression"] = Compression.BROTLI
+
+    unsupported = io.BytesIO()
+    unsupported.write(serialize_header(header))
+    unsupported.write(
+        _pmtiles_section(original, reader.header(), "root_offset", "root_length")
+    )
+    unsupported.write(
+        _pmtiles_section(
+            original, reader.header(), "metadata_offset", "metadata_length"
+        )
+    )
+    unsupported.write(
+        _pmtiles_section(
+            original, reader.header(), "tile_data_offset", "tile_data_length"
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="metadata compression"):
+        _inject_attribution(unsupported.getvalue(), "Unsupported")
+
+
+@pytest.mark.unit
+def test_inject_attribution_gzip_output_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated gzip rewrites stay byte-identical even if the clock changes."""
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles import _writer as writer_module
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {"name": "deterministic", "description": "", "vector_layers": []},
+    )
+
+    times = iter([1_700_000_000, 1_700_000_123])
+    monkeypatch.setattr(writer_module.gzip.time, "time", lambda: next(times))
+
+    first = _inject_attribution(original, "Deterministic attribution")
+    second = _inject_attribution(original, "Deterministic attribution")
+
+    assert first == second
 
 
 # ---------------------------------------------------------------------------
