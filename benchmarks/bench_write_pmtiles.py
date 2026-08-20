@@ -143,14 +143,14 @@ def _run_path(gdf: gpd.GeoDataFrame, tmp: Path) -> tuple[float, float, int, int]
 
     # warm-up
     for _ in range(_WARMUP):
-        write_pmtiles({"pts": gdf[:10]}, out, on_overflow="ignore")
+        write_pmtiles({"pts": gdf[:10]}, out, on_overflow="unsafe")
 
     times: list[float] = []
     peak_mb = 0.0
     for i in range(_REPEATS):
         tracemalloc.start()
         t0 = time.perf_counter()
-        write_pmtiles({"pts": gdf}, out, on_overflow="ignore")
+        write_pmtiles({"pts": gdf}, out, on_overflow="unsafe")
         wall = time.perf_counter() - t0
         _cur, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -166,7 +166,7 @@ def _run_path(gdf: gpd.GeoDataFrame, tmp: Path) -> tuple[float, float, int, int]
 def _run_bytesio(gdf: gpd.GeoDataFrame, tmp: Path) -> tuple[float, float, int, int]:
     """Benchmark BytesIO output.  Returns (wall_s, peak_mb, archive_kb, ntiles)."""
     # warm-up using a small slice
-    write_pmtiles({"pts": gdf[:10]}, io.BytesIO(), on_overflow="ignore")
+    write_pmtiles({"pts": gdf[:10]}, io.BytesIO(), on_overflow="unsafe")
 
     times: list[float] = []
     peak_mb = 0.0
@@ -175,7 +175,7 @@ def _run_bytesio(gdf: gpd.GeoDataFrame, tmp: Path) -> tuple[float, float, int, i
         buf = io.BytesIO()
         tracemalloc.start()
         t0 = time.perf_counter()
-        write_pmtiles({"pts": gdf}, buf, on_overflow="ignore")
+        write_pmtiles({"pts": gdf}, buf, on_overflow="unsafe")
         wall = time.perf_counter() - t0
         _cur, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
