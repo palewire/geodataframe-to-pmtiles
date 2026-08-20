@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import io
 import json
 import warnings
@@ -69,6 +71,16 @@ def _open_pmtiles_bytes(data: bytes) -> tuple[gdal.Dataset, str]:  # noqa: F821
 def _write_ignore(layers, output, **kwargs):
     """Call write_pmtiles with on_overflow='ignore' to suppress the default warning."""
     write_pmtiles(layers, output, on_overflow="ignore", **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _skip_integration_without_gdal(request: pytest.FixtureRequest) -> None:
+    """Skip integration tests when the native GDAL runtime is unavailable."""
+    if (
+        request.node.get_closest_marker("integration")
+        and importlib.util.find_spec("osgeo") is None
+    ):
+        pytest.skip("GDAL Python bindings are not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +487,24 @@ def test_on_overflow_invalid_value_raises() -> None:
             io.BytesIO(),
             on_overflow="drop",  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.unit
+def test_missing_gdal_runtime_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_pmtiles raises a runtime error if GDAL cannot be imported."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    def _missing_osgeo(name: str, package: str | None = None) -> object:
+        if name.startswith("osgeo"):
+            raise ImportError("No module named 'osgeo'")
+        return importlib.import_module(name, package)
+
+    monkeypatch.setattr(writer_module, "import_module", _missing_osgeo)
+
+    with pytest.raises(RuntimeError, match="GDAL Python bindings are required"):
+        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="ignore")
 
 
 # ---------------------------------------------------------------------------

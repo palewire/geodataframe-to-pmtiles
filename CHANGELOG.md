@@ -24,7 +24,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   internal list handling is never allowed to leak through.
 - `on_overflow: Literal["error", "warn", "ignore"]` parameter (default
   `"warn"`) for the GDAL tile-level drop policy.  Per-tile `MAX_FEATURES` is
-  derived from input (`max(2_000_000, total_features)`); `MAX_SIZE` is 500 MB.
+  derived from input (`max(300_000, total_features)`); `MAX_SIZE` is 10 MB.
   `"error"` raises `TileOverflowError` before writing so callers must opt in.
 - `TileOverflowError` exception (subclass of `WritePMTilesError`).
 - Explicit CRS validation: only EPSG:4326 is accepted; `MissingCRSError`
@@ -44,6 +44,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not write `attribution` from `CONF` option to archive bytes).
 
 ### Changed
+
+- Removed GDAL as a hard pip dependency, made `write_pmtiles()` importable
+  without GDAL, and switched CI test jobs to provision native GDAL separately.
 
 ### Fixed
 

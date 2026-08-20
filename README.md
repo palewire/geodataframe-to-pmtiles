@@ -10,10 +10,12 @@ subprocesses, no temporary files.
 pip install geodataframe-to-pmtiles
 ```
 
-> **Note:** The `gdal` Python package requires the system GDAL development
-> headers.  On Debian/Ubuntu: `apt install libgdal-dev`.  On macOS:
-> `brew install gdal`.  The `gdal` PyPI package version must match the system
-> GDAL version exactly (e.g. `pip install gdal==3.12.2`).
+> **Note:** The library itself is pure Python, but `write_pmtiles()` needs a
+> native GDAL runtime with the PMTiles driver available. The package imports
+> without GDAL; calling the writer without it raises a clear `RuntimeError`.
+> In CI we install GDAL from conda-forge. Locally, install GDAL separately via
+> conda-forge, Homebrew, or your operating system package manager before
+> writing PMTiles archives.
 
 ## Usage
 
@@ -90,10 +92,10 @@ the full API reference.
 ## Overflow policy
 
 The GDAL PMTiles driver silently drops features when a tile exceeds per-tile
-`MAX_FEATURES` or `MAX_SIZE` limits.  `write_pmtiles` sets limits derived from
-the input (`MAX_FEATURES = max(2_000_000, total_features)`, `MAX_SIZE = 500 MB`)
-to reduce the risk, but per-tile overflow with dense spatial data is possible
-and **cannot be detected post-write through this API**.
+`MAX_FEATURES` or `MAX_SIZE` limits. `write_pmtiles` sets tested POC caps
+derived from the input (`MAX_FEATURES = max(300_000, total_features)`,
+`MAX_SIZE = 10 MB`) to reduce the risk, but per-tile overflow with dense
+spatial data is possible and **cannot be detected post-write through this API**.
 
 * `on_overflow="error"` — refuses to write; caller must opt in to `"warn"` or
   `"ignore"` after reviewing the limitation.

@@ -6,6 +6,10 @@ directly; no subprocesses are spawned and no temporary files are written to
 disk.  Intermediate data lives in GDAL's in-memory virtual filesystem
 (``/vsimem/``) for the duration of the call.
 
+The package imports without GDAL present.  ``write_pmtiles`` raises a clear
+``RuntimeError`` if the native GDAL runtime or PMTiles driver is unavailable at
+call time.
+
 .. rubric:: Property normalisation rules
 
 +---------------------------+--------------------+------------------------------------------+
@@ -36,8 +40,8 @@ disk.  Intermediate data lives in GDAL's in-memory virtual filesystem
 The GDAL PMTiles driver silently drops features when a tile exceeds its
 per-tile ``MAX_SIZE`` (bytes) or ``MAX_FEATURES`` limit.  ``write_pmtiles``
 sets per-tile limits derived from the input: ``MAX_FEATURES`` is set to
-``max(2_000_000, total_features_across_all_layers)`` so that a single tile
-could theoretically hold every input feature.  ``MAX_SIZE`` is set to 500 MB.
+``max(300_000, total_features_across_all_layers)`` so that a single tile could
+theoretically hold every input feature.  ``MAX_SIZE`` is set to 10 MB.
 
 Despite these generous limits, dense spatial clustering at coarse zoom levels
 can still produce tiles that exceed the limit.  The GDAL driver provides no
@@ -79,9 +83,10 @@ import json
 import math
 import uuid
 import warnings
+from importlib import import_module
 from io import IOBase
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 import numpy as np
 
@@ -98,21 +103,6 @@ if TYPE_CHECKING:
 
     import geopandas as gpd
 
-try:
-    from osgeo import gdal, ogr, osr
-
-    gdal.UseExceptions()
-    ogr.UseExceptions()
-except ImportError as _gdal_err:
-    msg = (
-        "GDAL Python bindings are required but could not be imported. "
-        "Install the 'gdal' package matching your system GDAL version, e.g. "
-        "'pip install gdal==3.12.2'.  The system GDAL development headers must "
-        "be present (e.g. 'libgdal-dev' on Debian/Ubuntu or the 'gdal' "
-        "Homebrew formula on macOS)."
-    )
-    raise ImportError(msg) from _gdal_err
-
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
@@ -124,41 +114,53 @@ DEFAULT_MIN_ZOOM: int = 0
 DEFAULT_MAX_ZOOM: int = 8
 
 # Floor for per-tile feature limit even when input is small.
-_MIN_MAX_FEATURES: int = 2_000_000
+_MIN_MAX_FEATURES: int = 300_000
 
-# Per-tile size ceiling (bytes).  500 MB is well above any realistic tile.
-_MAX_SIZE_BYTES: int = 500_000_000
+# Per-tile size ceiling (bytes).  10 MB was the tested POC cap.
+_MAX_SIZE_BYTES: int = 10_000_000
 
-# ---------------------------------------------------------------------------
-# OGR field-type helpers
-# ---------------------------------------------------------------------------
-
-_OGR_FIELD_TYPES: dict[str, int] = {
-    "string": int(ogr.OFTString),
-    "int": int(ogr.OFTInteger64),
-    "float": int(ogr.OFTReal),
-    "bool": int(ogr.OFTInteger),  # MVT has no native bool; store as 0/1
-}
+PropertyKind = Literal["string", "int", "float", "bool"]
 
 
-def _infer_ogr_field_type(
-    series: gpd.pd.Series,  # type: ignore[name-defined]
+def _load_gdal_modules() -> tuple[Any, Any, Any]:
+    """Import GDAL modules and raise a runtime error if they are unavailable."""
+    try:
+        gdal = import_module("osgeo.gdal")
+        ogr = import_module("osgeo.ogr")
+        osr = import_module("osgeo.osr")
+    except ImportError as exc:
+        msg = (
+            "GDAL Python bindings are required to write PMTiles. Install a "
+            "matching native GDAL runtime and Python bindings in the active "
+            "environment (for example via conda-forge, Homebrew, or your "
+            "system package manager), then call write_pmtiles again."
+        )
+        raise RuntimeError(msg) from exc
+
+    gdal.UseExceptions()
+    ogr.UseExceptions()
+    return gdal, ogr, osr
+
+
+def _ogr_field_types(ogr: Any) -> dict[str, int]:
+    """Return the OGR field type mapping used by the writer."""
+    return {
+        "string": int(ogr.OFTString),
+        "int": int(ogr.OFTInteger64),
+        "float": int(ogr.OFTReal),
+        "bool": int(ogr.OFTInteger),  # MVT has no native bool; store as 0/1
+    }
+
+
+def _infer_property_kind(
+    series: Any,
     json_field_names: frozenset[str] | None,
-) -> int:
-    """Return an OGR field type constant for *series*.
+) -> PropertyKind:
+    """Return the normalised property kind for *series*.
 
     Only the first non-null value is examined.  An entirely-null series is
-    typed as String.  Raises ``UnsupportedPropertyTypeError`` for types that
-    cannot be normalised, respecting the ``json_field_names`` policy.
-
-    Parameters
-    ----------
-    series:
-        A pandas Series from a GeoDataFrame column.
-    json_field_names:
-        If ``None``, list/dict values are auto-JSON-encoded.  If a frozenset,
-        only column names in the set receive JSON treatment; other list/dict
-        values raise ``UnsupportedPropertyTypeError``.
+    typed as ``"string"``.  Raises ``UnsupportedPropertyTypeError`` for types
+    that cannot be normalised, respecting the ``json_field_names`` policy.
     """
     import pandas as pd
 
@@ -176,16 +178,16 @@ def _infer_ogr_field_type(
         if isinstance(val, bool) or (
             isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
         ):
-            return _OGR_FIELD_TYPES["bool"]
+            return "bool"
         if isinstance(val, (int, np.integer)):
-            return _OGR_FIELD_TYPES["int"]
+            return "int"
         if isinstance(val, (float, np.floating)):
-            return _OGR_FIELD_TYPES["float"]
+            return "float"
         if isinstance(val, str):
-            return _OGR_FIELD_TYPES["string"]
+            return "string"
         if isinstance(val, (list, dict)):
             if json_field_names is None or col_name in json_field_names:
-                return _OGR_FIELD_TYPES["string"]  # will be JSON-encoded
+                return "string"  # will be JSON-encoded
             raise UnsupportedPropertyTypeError(
                 f"Column '{col_name}' contains list/dict values that would be "
                 "JSON-encoded, but this column is not in json_fields.  "
@@ -193,10 +195,10 @@ def _infer_ogr_field_type(
                 f"or include '{col_name}' in json_fields explicitly."
             )
         if isinstance(val, (_dt.date, _dt.datetime)):
-            return _OGR_FIELD_TYPES["string"]  # ISO 8601 string
+            return "string"  # ISO 8601 string
         # pandas Timestamp and other datetime-like types.
         if callable(getattr(type(val), "isoformat", None)):
-            return _OGR_FIELD_TYPES["string"]  # ISO 8601 string
+            return "string"  # ISO 8601 string
         raise UnsupportedPropertyTypeError(
             f"Column '{col_name}' contains a value of type "
             f"{type(val).__name__!r} which cannot be encoded as an MVT "
@@ -204,8 +206,7 @@ def _infer_ogr_field_type(
             "list (with json_fields), dict (with json_fields), datetime, None / NA."
         )
 
-    # Entirely null column → String
-    return _OGR_FIELD_TYPES["string"]
+    return "string"
 
 
 def _normalise_value(
@@ -277,8 +278,8 @@ OverflowPolicy = Literal["error", "warn", "ignore"]
 _OVERFLOW_WARNING = (
     "The GDAL PMTiles driver silently drops features when a tile exceeds its "
     "per-tile MAX_SIZE or MAX_FEATURES limit.  Per-tile limits are set "
-    "generously (MAX_FEATURES = max(2_000_000, total_features); MAX_SIZE = "
-    "500 MB) to minimise the risk, but dense spatial clustering at coarse zoom "
+    "generously (MAX_FEATURES = max(300_000, total_features); MAX_SIZE = "
+    "10 MB) to minimise the risk, but dense spatial clustering at coarse zoom "
     "levels can still trigger silent drops.  GDAL provides no post-write "
     "signal when a drop occurs.  Verify the output independently for "
     "high-density datasets.  Pass on_overflow='ignore' to suppress this "
@@ -364,17 +365,13 @@ def write_pmtiles(
 
     Notes
     -----
-    **Attribution is not supported in this POC.**  The GDAL 3.12 PMTiles
-    driver does not reliably write or expose attribution metadata.  See the
-    module docstring for details.
-
     List- and dict-valued properties are explicitly JSON-encoded to strings.
     Boolean values are stored as integers (1 for True, 0 for False) because
     the MVT specification does not include a dedicated boolean type.
 
     Per-tile ``MAX_FEATURES`` is derived from the input:
-    ``max(2_000_000, total_features_across_all_layers)``.  ``MAX_SIZE`` is
-    fixed at 500 MB.
+    ``max(300_000, total_features_across_all_layers)``.  ``MAX_SIZE`` is fixed
+    at 10 MB.
     """
     import geopandas as gpd
 
@@ -434,9 +431,12 @@ def write_pmtiles(
 
     # Validate all column types up-front before any GDAL objects are created.
     # This prevents a partially-initialised dataset from being written.
-    for gdf in layers.values():
+    field_kinds_by_layer: dict[str, dict[str, PropertyKind]] = {}
+    for layer_name, gdf in layers.items():
+        field_kinds: dict[str, PropertyKind] = {}
         for col in (c for c in gdf.columns if c != gdf.geometry.name):
-            _infer_ogr_field_type(gdf[col], json_field_names)
+            field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
+        field_kinds_by_layer[layer_name] = field_kinds
 
     # ------------------------------------------------------------------
     # Overflow policy
@@ -461,6 +461,9 @@ def write_pmtiles(
 
     if on_overflow == "warn":
         warnings.warn(_OVERFLOW_WARNING, UserWarning, stacklevel=2)
+
+    # Import GDAL only after the pure-Python validation has succeeded.
+    gdal, ogr, osr = _load_gdal_modules()
 
     # ------------------------------------------------------------------
     # Create the PMTiles archive in /vsimem/
@@ -496,7 +499,16 @@ def write_pmtiles(
         srs.ImportFromEPSG(4326)
 
         for layer_name, gdf in layers.items():
-            _write_layer(ds, layer_name, gdf, srs, simplification, json_field_names)
+            _write_layer(
+                ds,
+                layer_name,
+                gdf,
+                srs,
+                simplification,
+                json_field_names,
+                ogr,
+                field_kinds_by_layer[layer_name],
+            )
 
         # Flush to vsimem before reading back.
         ds.FlushCache()
@@ -507,7 +519,7 @@ def write_pmtiles(
     # Read the bytes from /vsimem/ and write to the caller's output.
     # ------------------------------------------------------------------
     try:
-        data = _read_vsimem(vsimem_path)
+        data = _read_vsimem(vsimem_path, gdal)
     finally:
         gdal.Unlink(vsimem_path)
 
@@ -529,18 +541,20 @@ def write_pmtiles(
 
 
 def _write_layer(
-    ds: gdal.Dataset,
+    ds: Any,
     layer_name: str,
-    gdf: gpd.GeoDataFrame,
-    srs: osr.SpatialReference,
+    gdf: Any,
+    srs: Any,
     simplification: float | None,
     json_field_names: frozenset[str] | None,
+    ogr: Any,
+    field_kinds: dict[str, PropertyKind],
 ) -> None:
     """Create an OGR layer inside *ds* and populate it from *gdf*."""
     import pandas as pd
 
     # Determine OGR geometry type from the GeoDataFrame.
-    geom_type = _shapely_geom_type_to_ogr(gdf)
+    geom_type = _shapely_geom_type_to_ogr(gdf, ogr)
 
     layer_options: list[str] = []
     if simplification is not None:
@@ -555,9 +569,11 @@ def _write_layer(
 
     # Discover non-geometry columns and their OGR types.
     property_cols = [c for c in gdf.columns if c != gdf.geometry.name]
-    field_types: dict[str, int] = {}
+    ogr_field_types = _ogr_field_types(ogr)
+    field_types: dict[str, int] = {
+        col: ogr_field_types[field_kinds[col]] for col in property_cols
+    }
     for col in property_cols:
-        field_types[col] = _infer_ogr_field_type(gdf[col], json_field_names)
         lyr.CreateField(ogr.FieldDefn(col, field_types[col]))
 
     layer_defn = lyr.GetLayerDefn()
@@ -589,7 +605,7 @@ def _write_layer(
     _ = pd  # suppress unused-import; pd.isna is used in helpers
 
 
-def _shapely_geom_type_to_ogr(gdf: gpd.GeoDataFrame) -> int:
+def _shapely_geom_type_to_ogr(gdf: Any, ogr: Any) -> int:
     """Return an OGR geometry type constant for the dominant type in *gdf*."""
     _map: dict[str, int] = {
         "Point": int(ogr.wkbPoint),
@@ -607,7 +623,7 @@ def _shapely_geom_type_to_ogr(gdf: gpd.GeoDataFrame) -> int:
     return _unknown
 
 
-def _read_vsimem(path: str) -> bytes:
+def _read_vsimem(path: str, gdal: Any) -> bytes:
     """Return the raw bytes of a file stored in GDAL's virtual filesystem."""
     vf = gdal.VSIFOpenL(path, "rb")
     if vf is None:
