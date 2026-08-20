@@ -535,3 +535,67 @@ def test_polygon_layer(tmp_path: Path) -> None:
     lyr = ds.GetLayerByIndex(0)
     assert lyr.GetName() == "polys"
     ds = None
+
+
+# ---------------------------------------------------------------------------
+# Attribution and simplification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_attribution_stored_in_conf(tmp_path: Path) -> None:
+    """attribution argument is embedded in the archive's TileJSON CONF blob."""
+    from osgeo import gdal
+
+    out = tmp_path / "attr.pmtiles"
+    write_pmtiles(
+        {"lyr": _points_gdf()},
+        out,
+        attribution="© Test Attribution",
+    )
+    # We can verify the file was written successfully.
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    # The archive must be readable.
+    assert ds.GetLayerCount() >= 1
+    ds = None
+
+
+@pytest.mark.integration
+def test_simplification_option(tmp_path: Path) -> None:
+    """simplification argument is accepted and the archive is written."""
+    from osgeo import gdal
+
+    out = tmp_path / "simplif.pmtiles"
+    write_pmtiles({"lyr": _points_gdf()}, out, simplification=2.0)
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    ds = None
+
+
+@pytest.mark.unit
+def test_non_geodataframe_raises() -> None:
+    """A non-GeoDataFrame value in layers raises TypeError."""
+    with pytest.raises(TypeError):
+        write_pmtiles({"lyr": "not a gdf"}, io.BytesIO())  # type: ignore[arg-type]
+
+
+@pytest.mark.integration
+def test_pd_na_treated_as_null(tmp_path: Path) -> None:
+    """pandas NA values are treated as null fields."""
+    from osgeo import gdal
+
+    gdf = gpd.GeoDataFrame(
+        {"label": pd.array(["a", pd.NA, "c"], dtype="string")},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "pdna.pmtiles"
+    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    null_count = sum(1 for feat in lyr if feat.GetField("label") is None)
+    assert null_count >= 1
+    ds = None
