@@ -17,9 +17,11 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from geodataframe_to_pmtiles import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileOverflowError,
+    UnsupportedCRSError,
     UnsupportedPropertyTypeError,
     write_pmtiles,
 )
@@ -1534,6 +1536,44 @@ def test_wrong_crs_no_longer_raises_auto_reprojects() -> None:
 
 
 @pytest.mark.unit
+def test_unresolvable_crs_raises_unsupported_crs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CRS lookup failure raises UnsupportedCRSError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object) -> int:
+        raise RuntimeError("bad crs")
+
+    monkeypatch.setattr(type(gdf.crs), "to_epsg", _boom)
+
+    with pytest.raises(UnsupportedCRSError, match="cannot be resolved") as excinfo:
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "bad crs" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
+def test_transform_failure_raises_crs_transform_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reprojection failure raises CRSTransformError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object, *args: object, **kwargs: object) -> gpd.GeoDataFrame:
+        raise ValueError("transform failed")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_crs", _boom)
+
+    with pytest.raises(CRSTransformError, match="coordinate transformation") as excinfo:
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "transform failed" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
 def test_non_mutation_of_input_gdf() -> None:
     """write_pmtiles does not mutate the caller's GeoDataFrame CRS or geometries.
 
@@ -1653,6 +1693,36 @@ def test_non_epsg_proj_string_decodes_correctly(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("source_factory", "label"),
+    [
+        (_point_gdf_3857, "epsg3857"),
+        (_point_gdf_projected, "epsg25832"),
+        (_point_gdf_non_epsg, "proj"),
+    ],
+)
+def test_auto_reprojected_sources_match_pretransformed_4326(
+    tmp_path: Path,
+    source_factory,
+    label: str,
+) -> None:
+    """Auto-reprojected sources decode exactly like a pre-transformed EPSG:4326 input."""
+    from .pmtiles_semantics import read_pmtiles_archive
+
+    expected = tmp_path / f"expected-{label}.pmtiles"
+    actual = tmp_path / f"actual-{label}.pmtiles"
+    _write_ignore({"pts": _point_gdf_4326()}, expected, min_zoom=0, max_zoom=0)
+    _write_ignore({"pts": source_factory()}, actual, min_zoom=0, max_zoom=0)
+
+    expected_features = read_pmtiles_archive(expected, z=0, x=0, y=0)[2]["pts"][
+        "features"
+    ]
+    actual_features = read_pmtiles_archive(actual, z=0, x=0, y=0)[2]["pts"]["features"]
+
+    assert actual_features == expected_features
+
+
+@pytest.mark.integration
 def test_mixed_crs_layers_decode_correctly(tmp_path: Path) -> None:
     """Mixed-CRS layers (EPSG:4326 + EPSG:3857) each decode to the correct geometry type."""
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
@@ -1673,6 +1743,8 @@ def test_mixed_crs_layers_decode_correctly(tmp_path: Path) -> None:
         summary = summarize_features(layers[layer_name]["features"])
         assert summary["feature_count"] >= 1
         assert "Point" in summary["geometry_types"]
+
+    assert layers["pts_3857"]["features"] == layers["pts_4326"]["features"]
 
 
 @pytest.mark.integration
