@@ -663,7 +663,7 @@ def write(
         such as :class:`io.BytesIO`.
     layer:
         Layer name for the single-frame form.  Required when *layers* is a
-        :class:`~geopandas.GeoDataFrame`; must be omitted when
+        :class:`~geopandas.GeoDataFrame` and must be non-empty; must be omitted when
         *layers* is a mapping.
     min_zoom:
         Archive-wide minimum zoom level (0-22, default 0).
@@ -763,6 +763,9 @@ def write(
             raise TypeError(msg)
         if not isinstance(layer, str):
             msg = f"'layer' must be a str, got {type(layer).__name__!r}."
+            raise TypeError(msg)
+        if not layer.strip() or "\x00" in layer:
+            msg = "'layer' must be a non-empty string without null characters."
             raise TypeError(msg)
         layers_mapping: dict[str, gpd.GeoDataFrame] = {layer: layers}
     else:

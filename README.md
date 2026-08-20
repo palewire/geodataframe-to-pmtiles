@@ -96,7 +96,7 @@ write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
 |---|---|---|---|
 | `layers` | `Mapping[str, GeoDataFrame]` or `GeoDataFrame` | required | Layer name → GeoDataFrame mapping (mapping form), or a single GeoDataFrame (single-frame form, requires `layer`). Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
 | `output` | `str \| Path \| BinaryIO` | required | Destination file path (string or Path) or binary stream. |
-| `layer` | `str` | *(omit for mapping)* | Layer name. Required for the single-frame form (must be a `str`); must be omitted entirely when `layers` is a mapping. |
+| `layer` | `str` | *(omit for mapping)* | Non-empty layer name. Required for the single-frame form; must be omitted entirely when `layers` is a mapping. |
 | `min_zoom` | `int` | `0` | Archive-wide minimum zoom level (0-22). |
 | `max_zoom` | `int` | `8` | Archive-wide maximum zoom level (0-22). |
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |

@@ -30,7 +30,7 @@ documented below.
    such as :class:`io.BytesIO`.
 :param layer:
    Layer name for the single-frame form.  Required when *layers* is a
-   :class:`~geopandas.GeoDataFrame`; must be omitted when *layers* is a
+   :class:`~geopandas.GeoDataFrame` and must be non-empty; must be omitted when *layers* is a
    mapping.
 :param min_zoom: Archive-wide minimum zoom level (0–22, default 0).
 :param max_zoom: Archive-wide maximum zoom level (0–22, default 8).

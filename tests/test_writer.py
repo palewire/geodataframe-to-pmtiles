@@ -2114,6 +2114,14 @@ def test_write_single_gdf_with_layer_non_str_raises() -> None:
         write(gdf, buf, layer=123)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("layer", ["", "   ", "\x00"])
+def test_write_single_gdf_with_invalid_layer_name_raises(layer: str) -> None:
+    """write(gdf, output, layer=...) rejects empty or unusable layer names."""
+    gdf = _points_gdf()
+    with pytest.raises(TypeError, match="non-empty"):
+        write(gdf, io.BytesIO(), layer=layer)
+
+
 @pytest.mark.integration
 def test_write_single_gdf_form(tmp_path: Path) -> None:
     from osgeo import gdal

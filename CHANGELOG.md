@@ -11,7 +11,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Renamed public API**: `write_pmtiles` is replaced by `gpm.write` (usable
   as `import geodataframe_to_pmtiles as gpm`).  No compatibility alias is
   provided.  `gpm.write` accepts either a `Mapping[str, GeoDataFrame]` or a
-  single `GeoDataFrame` with an explicit `layer=` name; the mapping form
+  single `GeoDataFrame` with a non-empty explicit `layer=` name; the mapping form
   rejects `layer`, and the single-frame form requires it.  All existing
   options and behaviors are preserved.  Closes #16.
 
