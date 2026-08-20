@@ -11,10 +11,10 @@ Run with the project's Python environment (needs GDAL with the PMTiles
 driver and geopandas installed)::
 
     # Recommended: use the environment that has GDAL available
-    python benchmarks/bench_write.py
+    python benchmarks/bench_write_pmtiles.py
 
     # Scale selection (skip large scales for a fast sanity check)
-    python benchmarks/bench_write.py --fast
+    python benchmarks/bench_write_pmtiles.py --fast
 
 Output columns
 --------------

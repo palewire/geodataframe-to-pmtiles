@@ -568,7 +568,6 @@ def write(
     layers: Mapping[str, gpd.GeoDataFrame],
     output: Path | BinaryIO,
     *,
-    layer: None = None,
     min_zoom: int = ...,
     max_zoom: int = ...,
     name: str = ...,
