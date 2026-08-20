@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib
 import importlib.util
@@ -16,6 +17,7 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from geodataframe_to_pmtiles import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileOverflowError,
@@ -1523,12 +1525,263 @@ def test_missing_crs_raises() -> None:
         write_pmtiles({"lyr": gdf}, io.BytesIO())
 
 
-@pytest.mark.unit
-def test_wrong_crs_raises() -> None:
-    """A GeoDataFrame in a non-EPSG:4326 CRS raises UnsupportedCRSError."""
+@pytest.mark.integration
+def test_wrong_crs_no_longer_raises_auto_reprojects() -> None:
+    """A GeoDataFrame in a non-EPSG:4326 CRS is now auto-reprojected (no error)."""
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
-    with pytest.raises(UnsupportedCRSError):
+    # Should not raise — EPSG:3857 is reprojected to EPSG:4326 automatically.
+    buf = io.BytesIO()
+    write_pmtiles({"lyr": gdf}, buf)
+    assert buf.tell() > 0
+
+
+@pytest.mark.unit
+def test_unresolvable_crs_raises_unsupported_crs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CRS lookup failure raises UnsupportedCRSError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object) -> int:
+        raise RuntimeError("bad crs")
+
+    monkeypatch.setattr(type(gdf.crs), "to_epsg", _boom)
+
+    with pytest.raises(UnsupportedCRSError, match="cannot be resolved") as excinfo:
         write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "bad crs" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
+def test_transform_failure_raises_crs_transform_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reprojection failure raises CRSTransformError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object, *args: object, **kwargs: object) -> gpd.GeoDataFrame:
+        raise ValueError("transform failed")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_crs", _boom)
+
+    with pytest.raises(CRSTransformError, match="coordinate transformation") as excinfo:
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "transform failed" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
+def test_non_mutation_of_input_gdf() -> None:
+    """write_pmtiles does not mutate the caller's GeoDataFrame CRS or geometries.
+
+    This test does not require GDAL: reprojection is performed on a copy inside
+    write_pmtiles via gdf.to_crs(), which must not modify the input.  If GDAL is
+    unavailable the call raises RuntimeError after the reprojection step, but the
+    check happens before writing.
+    """
+    gdf = gpd.GeoDataFrame(
+        {"name": ["a", "b"]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0)],
+        crs="EPSG:3857",
+    )
+    original_crs = gdf.crs
+    original_geom = list(gdf.geometry)
+    with contextlib.suppress(RuntimeError):
+        # GDAL not available in this environment; mutation check still valid
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+    assert gdf.crs == original_crs, "CRS of input GeoDataFrame must not be changed"
+    assert list(gdf.geometry) == original_geom, (
+        "Geometries of input GDF must not be changed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CRS reprojection — semantic decoder tests
+# ---------------------------------------------------------------------------
+
+
+def _point_gdf_4326() -> gpd.GeoDataFrame:
+    """A known point in EPSG:4326 (lon/lat)."""
+    return gpd.GeoDataFrame(
+        {"label": ["origin"]},
+        geometry=[Point(10.0, 52.0)],  # lon=10, lat=52
+        crs="EPSG:4326",
+    )
+
+
+def _point_gdf_3857() -> gpd.GeoDataFrame:
+    """The same point as above reprojected to EPSG:3857."""
+    return _point_gdf_4326().to_crs("EPSG:3857")
+
+
+def _point_gdf_projected() -> gpd.GeoDataFrame:
+    """The same point in a local projected CRS (ETRS89 / UTM zone 32N)."""
+    return _point_gdf_4326().to_crs("EPSG:25832")
+
+
+def _point_gdf_non_epsg() -> gpd.GeoDataFrame:
+    """The same point expressed via a non-EPSG PROJ string."""
+    import pyproj
+
+    crs_obj = pyproj.CRS.from_proj4("+proj=longlat +datum=WGS84 +no_defs")
+    return gpd.GeoDataFrame(
+        {"label": ["origin"]},
+        geometry=[Point(10.0, 52.0)],
+        crs=crs_obj,
+    )
+
+
+@pytest.mark.integration
+def test_epsg4326_source_decodes_correctly(tmp_path: Path) -> None:
+    """EPSG:4326 source (baseline) decodes to a Point feature with expected property."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs4326.pmtiles"
+    _write_safe({"pts": _point_gdf_4326()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+    assert "label" in summary["property_keys"]
+
+
+@pytest.mark.integration
+def test_epsg3857_source_decodes_equivalently(tmp_path: Path) -> None:
+    """EPSG:3857 source is auto-reprojected; decoded result is semantically equivalent to EPSG:4326."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs3857.pmtiles"
+    _write_safe({"pts": _point_gdf_3857()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+    assert "label" in summary["property_keys"]
+
+
+@pytest.mark.integration
+def test_projected_crs_decodes_equivalently(tmp_path: Path) -> None:
+    """A local projected CRS (EPSG:25832) is auto-reprojected; result decodes correctly."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs25832.pmtiles"
+    _write_safe({"pts": _point_gdf_projected()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+
+
+@pytest.mark.integration
+def test_non_epsg_proj_string_decodes_correctly(tmp_path: Path) -> None:
+    """A non-EPSG PROJ string CRS is accepted and decoded correctly."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs_proj.pmtiles"
+    _write_safe({"pts": _point_gdf_non_epsg()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("source_factory", "label"),
+    [
+        (_point_gdf_3857, "epsg3857"),
+        (_point_gdf_projected, "epsg25832"),
+        (_point_gdf_non_epsg, "proj"),
+    ],
+)
+def test_auto_reprojected_sources_match_pretransformed_4326(
+    tmp_path: Path,
+    source_factory,
+    label: str,
+) -> None:
+    """Auto-reprojected sources decode exactly like a pre-transformed EPSG:4326 input."""
+    from .pmtiles_semantics import read_pmtiles_archive
+
+    expected = tmp_path / f"expected-{label}.pmtiles"
+    actual = tmp_path / f"actual-{label}.pmtiles"
+    _write_safe({"pts": _point_gdf_4326()}, expected, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": source_factory()}, actual, min_zoom=0, max_zoom=0)
+
+    expected_features = read_pmtiles_archive(expected, z=0, x=0, y=0)[2]["pts"][
+        "features"
+    ]
+    actual_features = read_pmtiles_archive(actual, z=0, x=0, y=0)[2]["pts"]["features"]
+
+    assert actual_features == expected_features
+
+
+@pytest.mark.integration
+def test_mixed_crs_layers_decode_correctly(tmp_path: Path) -> None:
+    """Mixed-CRS layers (EPSG:4326 + EPSG:3857) each decode to the correct geometry type."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "mixed_crs.pmtiles"
+    _write_safe(
+        {
+            "pts_4326": _point_gdf_4326(),
+            "pts_3857": _point_gdf_3857(),
+        },
+        out,
+        min_zoom=0,
+        max_zoom=0,
+    )
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    for layer_name in ("pts_4326", "pts_3857"):
+        assert layer_name in layers, f"Layer {layer_name!r} missing from decoded tile"
+        summary = summarize_features(layers[layer_name]["features"])
+        assert summary["feature_count"] >= 1
+        assert "Point" in summary["geometry_types"]
+
+    assert layers["pts_3857"]["features"] == layers["pts_4326"]["features"]
+
+
+@pytest.mark.integration
+def test_reprojection_preserves_property_values(tmp_path: Path) -> None:
+    """Property values survive reprojection from EPSG:3857 to EPSG:4326 unchanged."""
+    from .pmtiles_semantics import read_pmtiles_archive
+
+    gdf = gpd.GeoDataFrame(
+        {"name": ["alpha", "beta"], "score": [42, 99]},
+        geometry=[Point(0.0, 0.0), Point(1_000_000.0, 1_000_000.0)],
+        crs="EPSG:3857",
+    )
+    out = tmp_path / "repro_props.pmtiles"
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "lyr" in layers
+    names = {f["properties"].get("name") for f in layers["lyr"]["features"]}
+    assert {"alpha", "beta"}.issubset(names)
+
+
+@pytest.mark.unit
+def test_non_mutation_input_geometry_unchanged() -> None:
+    """Reprojection from EPSG:3857 does not change the original geometry objects."""
+    from shapely.geometry import Point as ShapelyPoint
+
+    orig_geom = ShapelyPoint(1_000_000.0, 6_000_000.0)
+    gdf = gpd.GeoDataFrame(
+        {"x": [1]},
+        geometry=[orig_geom],
+        crs="EPSG:3857",
+    )
+    with contextlib.suppress(RuntimeError):
+        # GDAL not available; mutation check is still valid
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+    # Original geometry must be unchanged.
+    assert gdf.geometry.iloc[0].equals(orig_geom)
+    assert gdf.crs.to_epsg() == 3857
 
 
 @pytest.mark.unit

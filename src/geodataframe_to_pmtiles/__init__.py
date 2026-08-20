@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from geodataframe_to_pmtiles._writer import write_pmtiles
 from geodataframe_to_pmtiles.exceptions import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileLimitViolation,
@@ -14,6 +15,7 @@ from geodataframe_to_pmtiles.exceptions import (
 )
 
 __all__ = [
+    "CRSTransformError",
     "EmptyLayerError",
     "MissingCRSError",
     "TileLimitViolation",
