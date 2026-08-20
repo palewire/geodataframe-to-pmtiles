@@ -85,9 +85,11 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 
 ## API
 
-The documentation source is in [`docs/`](docs/). It is built in CI but is not
-deployed publicly yet; this README and [`docs/api.md`](docs/api.md) provide the
-current API reference.
+The documentation source is in [`docs/`](docs/) and is built in CI. Deployment
+is disabled pending explicit approval and the first deployment; afterward the
+public site will be available at
+`https://palewi.re/docs/geodataframe-to-pmtiles/`. Until then, this README and
+[`docs/api.md`](docs/api.md) provide the current API reference.
 
 ### `write` — two call forms
 

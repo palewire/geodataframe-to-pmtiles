@@ -60,3 +60,7 @@ linkcheck_timeout = 10
 linkcheck_retries = 2
 
 html_theme = "palewire"
+html_theme_options = {
+    "canonical_url": "https://palewi.re/docs/geodataframe-to-pmtiles/"
+}
+html_baseurl = "https://palewi.re/docs/geodataframe-to-pmtiles/"

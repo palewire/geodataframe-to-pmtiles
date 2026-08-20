@@ -36,7 +36,7 @@ classifiers = [
 
 [project.urls]
 Changelog = "https://github.com/palewire/geodataframe-to-pmtiles/blob/main/CHANGELOG.md"
-Documentation = "https://github.com/palewire/geodataframe-to-pmtiles/tree/main/docs"
+Documentation = "https://palewi.re/docs/geodataframe-to-pmtiles/"
 Source = "https://github.com/palewire/geodataframe-to-pmtiles"
 Issues = "https://github.com/palewire/geodataframe-to-pmtiles/issues"
 

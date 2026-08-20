@@ -13,11 +13,12 @@ This checklist tracks template setup for `geodataframe-to-pmtiles`.
 
 - [x] Replace the distribution placeholder in `docs/conf.py`.
 - [x] Add API reference page (`docs/api.md`) with autosummary.
-- [x] Document the repository's not-yet-deployed documentation status and
-      deployment prerequisites.
-- [ ] **External setup pending:** Configure S3 deployment through the protected
-      `docs-production` environment, AWS OIDC variables, and
-      `DOCS_DEPLOY_ENABLED=true`.
+- [x] Configure the protected `docs-production` environment (restricted to
+      `main`), AWS OIDC role `github-geodataframe-to-pmtiles`, `us-east-1`
+      region, and S3 target `palewire-docs/docs/geodataframe-to-pmtiles`.
+- [ ] **Deployment activation and first deploy pending:** Keep
+      `DOCS_DEPLOY_ENABLED=false` until explicit human approval, then enable it
+      and verify the first deployment at the canonical documentation URL.
 
 ## Continuous Integration
 

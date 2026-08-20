@@ -29,9 +29,10 @@ Until then, install a source checkout with `uv sync`.
 > conda-forge, Homebrew, or your operating system package manager before
 > writing PMTiles archives.
 
-> **Deployment status:** This documentation is built in CI but is not yet
-> deployed as a public site. Browse the source in the repository until the
-> deployment prerequisites in `RELEASING.md` are completed.
+> **Deployment status:** This documentation is built in CI. Its deployment
+> infrastructure is configured, but activation and the first deployment remain
+> pending. After explicit approval and a successful first deployment, it will
+> be available at `https://palewi.re/docs/geodataframe-to-pmtiles/`.
 
 ## Quick start
 

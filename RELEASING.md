@@ -93,7 +93,14 @@ and create any GitHub Release required by project policy.
 ## Documentation deployment
 
 `.github/workflows/docs.yaml` builds Sphinx documentation on pushes and pull
-requests. Deployment remains disabled until a maintainer protects the
-`docs-production` environment, configures its AWS OIDC role and deployment
-settings, and sets `DOCS_DEPLOY_ENABLED=true`. Those are external settings;
-do not imply that a public documentation URL is live before they are complete.
+requests. Its deployment infrastructure is configured: the `docs-production`
+environment is restricted to `main`; AWS OIDC uses
+`arn:aws:iam::989419493461:role/github-geodataframe-to-pmtiles` in `us-east-1`;
+and the environment secrets target the `palewire-docs` bucket under
+`docs/geodataframe-to-pmtiles`.
+
+Deployment activation and the first deployment remain pending.
+`DOCS_DEPLOY_ENABLED` is currently `false`, so the workflow cannot publish the
+site. After explicit human approval, a maintainer may enable it and verify the
+first deployment to `https://palewi.re/docs/geodataframe-to-pmtiles/`. Do not
+represent that URL as live until the deployment succeeds.
