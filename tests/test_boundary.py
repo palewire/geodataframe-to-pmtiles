@@ -41,7 +41,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import MultiPolygon, Point, Polygon, box
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 
 from geodataframe_to_pmtiles import EmptyLayerError, write_pmtiles
 from geodataframe_to_pmtiles._writer import (
@@ -215,6 +215,7 @@ def test_point_outside_north_limit_warns_and_is_excluded() -> None:
 
     gdf = _point_gdf(0, WEB_MERCATOR_LAT_LIMIT + 0.001)
     warn_msgs = _out_of_bounds_warns(gdf)
+    assert len(warn_msgs) == 1
     assert warn_msgs, "Expected a UserWarning for out-of-bounds feature"
 
     with pytest.raises(EmptyLayerError, match="out-of-bounds"):
@@ -230,6 +231,7 @@ def test_point_outside_south_limit_warns_and_is_excluded() -> None:
 
     gdf = _point_gdf(0, -(WEB_MERCATOR_LAT_LIMIT + 0.001))
     warn_msgs = _out_of_bounds_warns(gdf)
+    assert len(warn_msgs) == 1
     assert warn_msgs, "Expected a UserWarning for out-of-bounds feature"
 
     with pytest.raises(EmptyLayerError, match="out-of-bounds"):
@@ -243,7 +245,7 @@ def test_point_at_geographic_north_pole_warns_and_is_excluded() -> None:
 
     gdf = _point_gdf(0, 90.0)
     warn_msgs = _out_of_bounds_warns(gdf)
-    assert warn_msgs
+    assert len(warn_msgs) == 1
 
     with pytest.raises(EmptyLayerError):
         _raises_empty_layer_for_out_of_bounds(gdf)
@@ -256,7 +258,7 @@ def test_point_at_geographic_south_pole_warns_and_is_excluded() -> None:
 
     gdf = _point_gdf(0, -90.0)
     warn_msgs = _out_of_bounds_warns(gdf)
-    assert warn_msgs
+    assert len(warn_msgs) == 1
 
     with pytest.raises(EmptyLayerError):
         _raises_empty_layer_for_out_of_bounds(gdf)
@@ -280,7 +282,7 @@ def test_mixed_bounds_points_only_in_bounds_appear() -> None:
         if issubclass(w.category, UserWarning)
         and ("outside" in str(w.message).lower() or "Web Mercator" in str(w.message))
     ]
-    assert user_warnings, "Expected a UserWarning for 2 out-of-bounds features"
+    assert len(user_warnings) == 1, "Expected exactly one UserWarning for the layer"
     # The warning counts both out-of-bounds features: "2 feature(s)"
     assert "2" in str(user_warnings[0].message), (
         f"Expected '2' in warning message: {user_warnings[0].message}"
@@ -320,6 +322,39 @@ def test_empty_geometry_raises_empty_layer_error() -> None:
     )
     with pytest.raises(EmptyLayerError):
         write_pmtiles(layers={"pts": gdf}, output=io.BytesIO())
+
+
+@pytest.mark.integration
+def test_all_out_of_bounds_layer_leaves_path_unchanged(tmp_path: Path) -> None:
+    """An entirely out-of-bounds layer fails before a Path destination is replaced."""
+    out = tmp_path / "existing.pmtiles"
+    out.write_bytes(b"keep this archive")
+
+    gdf = _point_gdf(0, WEB_MERCATOR_LAT_LIMIT + 0.001)
+
+    with pytest.raises(EmptyLayerError):
+        write_pmtiles({"pts": gdf}, out, min_zoom=0, max_zoom=0, on_overflow="unsafe")
+
+    assert out.read_bytes() == b"keep this archive"
+
+
+@pytest.mark.integration
+def test_all_out_of_bounds_layer_leaves_stream_unchanged() -> None:
+    """An entirely out-of-bounds layer fails before a stream destination is written."""
+    stream = io.BytesIO(b"keep this archive")
+
+    gdf = _point_gdf(0, WEB_MERCATOR_LAT_LIMIT + 0.001)
+
+    with pytest.raises(EmptyLayerError):
+        write_pmtiles(
+            {"pts": gdf},
+            stream,
+            min_zoom=0,
+            max_zoom=0,
+            on_overflow="unsafe",
+        )
+
+    assert stream.getvalue() == b"keep this archive"
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +405,21 @@ def test_antimeridian_split_multipolygon_appears_on_both_sides() -> None:
     west_z2 = count_features_in_tile(data, "polys", z=2, x=0, y=1)
     assert east_z2 >= 1, f"East antimeridian side absent at z2 (got {east_z2})"
     assert west_z2 >= 1, f"West antimeridian side absent at z2 (got {west_z2})"
+
+
+@pytest.mark.integration
+def test_antimeridian_crossing_line_is_preserved() -> None:
+    """A line that crosses the antimeridian is preserved without being misclassified."""
+    line = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[LineString([(170, 0), (-170, 0)])],
+        crs="EPSG:4326",
+    )
+    data = _write(line, max_zoom=2, layer="lines")
+
+    assert count_features_in_tile(data, "lines", z=0, x=0, y=0) == 1
+    assert count_features_in_tile(data, "lines", z=1, x=0, y=0) >= 1
+    assert count_features_in_tile(data, "lines", z=1, x=1, y=0) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +484,7 @@ def test_polygon_entirely_outside_north_warns_and_is_excluded() -> None:
     poly = Polygon([(10, 87), (20, 87), (20, 90), (10, 90), (10, 87)])
     gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[poly], crs="EPSG:4326")
     warn_msgs = _out_of_bounds_warns(gdf)
-    assert warn_msgs, "Expected a UserWarning for entirely-outside polygon"
+    assert len(warn_msgs) == 1, "Expected exactly one UserWarning for the layer"
 
     with pytest.raises(EmptyLayerError):
         _raises_empty_layer_for_out_of_bounds(gdf, layer="polys")
@@ -447,7 +497,7 @@ def test_polygon_entirely_outside_south_warns_and_is_excluded() -> None:
     poly = Polygon([(10, -90), (20, -90), (20, -87), (10, -87), (10, -90)])
     gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[poly], crs="EPSG:4326")
     warn_msgs = _out_of_bounds_warns(gdf)
-    assert warn_msgs
+    assert len(warn_msgs) == 1
 
     with pytest.raises(EmptyLayerError):
         _raises_empty_layer_for_out_of_bounds(gdf, layer="polys")
@@ -495,7 +545,7 @@ def test_polar_points_fixture_boundary_semantics(tmp_path: Path) -> None:
         if issubclass(w.category, UserWarning)
         and ("outside" in str(w.message).lower() or "Web Mercator" in str(w.message))
     ]
-    assert user_warnings, "Expected UserWarning for out-of-bounds features"
+    assert len(user_warnings) == 1, "Expected exactly one UserWarning for the layer"
     # Exactly the 4 out-of-bounds features should trigger the warning
     assert str(provenance["expected_out_of_bounds"]) in str(user_warnings[0].message)
 

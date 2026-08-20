@@ -212,9 +212,8 @@ _OUT_OF_BOUNDS_WARNING = (
     "Layer '{layer_name}': {count} feature(s) lie entirely outside the Web "
     f"Mercator latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) and will not appear "
     "in the archive.  The GDAL PMTiles driver silently drops such features; "
-    "this library detects and reports them up-front.  Clip or reproject your "
-    "data to ±85.05° latitude before calling write_pmtiles to include the "
-    "affected features at the nearest boundary."
+    "this library detects and reports them up-front.  Clip or drop the affected "
+    "geometries so they fall within ±85.05° latitude before calling write_pmtiles."
 )
 
 
@@ -699,14 +698,15 @@ def write_pmtiles(
     # whole layer would be empty, raise EmptyLayerError with a clear message
     # instead of letting GDAL fail with "Invalid bounds".
     for layer_name, gdf in layers.items():
-        geom_col = str(gdf.geometry.name)
-        out_of_bounds = sum(
-            1
-            for geom in gdf.geometry
-            if geom is not None
-            and not (hasattr(geom, "is_empty") and geom.is_empty)
-            and _is_outside_mercator_extent(geom)
-        )
+        out_of_bounds = 0
+        valid_count = 0
+        for geom in gdf.geometry:
+            if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
+                continue
+            if _is_outside_mercator_extent(geom):
+                out_of_bounds += 1
+                continue
+            valid_count += 1
         if out_of_bounds > 0:
             warnings.warn(
                 _OUT_OF_BOUNDS_WARNING.format(
@@ -716,23 +716,18 @@ def write_pmtiles(
                 UserWarning,
                 stacklevel=2,
             )
-        valid_count = sum(
-            1
-            for geom in gdf.geometry
-            if geom is not None
-            and not (hasattr(geom, "is_empty") and geom.is_empty)
-            and not _is_outside_mercator_extent(geom)
-        )
         if valid_count == 0:
             msg = (
-                f"Layer '{layer_name}' has no features within the Web Mercator "
-                f"latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) after excluding "
-                f"{out_of_bounds} out-of-bounds feature(s).  "
-                "Clip or reproject your data to ±85.05° latitude before calling "
-                "write_pmtiles."
+                f"Layer '{layer_name}' has no valid features (non-null, non-empty, "
+                f"in-bounds) within the Web Mercator latitude extent "
+                f"(±{WEB_MERCATOR_LAT_LIMIT}°)"
+            )
+            if out_of_bounds:
+                msg += f" after excluding {out_of_bounds} out-of-bounds feature(s)"
+            msg += (
+                ". Clip or drop the affected geometries before calling write_pmtiles."
             )
             raise EmptyLayerError(msg)
-        del geom_col  # suppress potential unused warning
 
     # Import GDAL only after the pure-Python validation has succeeded.
     gdal, ogr, osr = _load_gdal_modules()
@@ -869,14 +864,12 @@ def _write_layer(
     # Write features in input order (deterministic).
     # Pre-check for features outside the Web Mercator latitude extent.  The
     # GDAL PMTiles driver drops them silently; we detect and report them here.
-    out_of_bounds_count = 0
     for row in gdf.itertuples(index=False):
         geom = getattr(row, geom_col)
         if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
             continue  # Skip null / empty geometries
 
         if _is_outside_mercator_extent(geom):
-            out_of_bounds_count += 1
             continue
 
         feat = ogr.Feature(layer_defn)
@@ -895,10 +888,6 @@ def _write_layer(
 
         lyr.CreateFeature(feat)
         feat = None  # Release
-
-    # The out-of-bounds warning is emitted in write_pmtiles (before GDAL objects
-    # are created) so we do not emit it again here; only track the count.
-    _ = out_of_bounds_count  # referenced for potential future use
 
     _ = pd  # suppress unused-import; pd.isna is used in helpers
 
