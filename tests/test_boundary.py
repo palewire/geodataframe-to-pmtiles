@@ -41,7 +41,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
+from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygon, box
 
 from geodataframe_to_pmtiles import EmptyLayerError, write_pmtiles
 from geodataframe_to_pmtiles._writer import (
@@ -159,6 +159,14 @@ def test_is_outside_mercator_extent_straddles() -> None:
     assert not _is_outside_mercator_extent(box(-10, 80, 10, 88))
     # A polygon that crosses the south limit — part is inside.
     assert not _is_outside_mercator_extent(box(-10, -88, 10, -80))
+
+
+@pytest.mark.unit
+def test_is_outside_mercator_extent_for_multipart_geometry() -> None:
+    """Multipart geometry with no in-bounds component is outside the extent."""
+    geom = MultiPoint([(0, 87), (0, -87)])
+
+    assert _is_outside_mercator_extent(geom)
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +297,20 @@ def test_mixed_bounds_points_only_in_bounds_appear() -> None:
     )
     n = count_features_in_tile(data, "pts", z=0, x=0, y=0)
     assert n == 3, f"Expected 3 in-bounds features at z0, got {n}"
+
+
+@pytest.mark.integration
+def test_multipart_geometry_outside_both_poles_warns_and_is_excluded() -> None:
+    """A multipart geometry with no valid component raises EmptyLayerError."""
+    gdf = gpd.GeoDataFrame(
+        {"label": ["both poles"]},
+        geometry=[MultiPoint([(0, 87), (0, -87)])],
+        crs="EPSG:4326",
+    )
+
+    assert len(_out_of_bounds_warns(gdf)) == 1
+    with pytest.raises(EmptyLayerError, match="out-of-bounds"):
+        _raises_empty_layer_for_out_of_bounds(gdf)
 
 
 # ---------------------------------------------------------------------------

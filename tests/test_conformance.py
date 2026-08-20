@@ -107,7 +107,11 @@ def _decode_mvt_geometry_to_wgs84(
     *,
     extent: int = 4096,
 ):
-    """Convert a decoded MVT geometry from tile coordinates to EPSG:4326."""
+    """Convert a decoded MVT geometry from tile coordinates to EPSG:4326.
+
+    ``mapbox-vector-tile`` flips MVT's screen-oriented y axis by default, so
+    its decoded y coordinates increase northward.
+    """
 
     def _convert(coords: object) -> object:
         if coords and isinstance(coords[0], (int, float)):
@@ -121,6 +125,27 @@ def _decode_mvt_geometry_to_wgs84(
     return shape(
         {"type": geometry["type"], "coordinates": _convert(geometry["coordinates"])}
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("coordinates", "expected_latitude"),
+    [
+        ([2048, 0], -85.0511287798066),
+        ([2048, 2048], 0),
+        ([2048, 4096], 85.0511287798066),
+    ],
+)
+def test_decode_mvt_geometry_uses_decoder_y_axis(
+    coordinates: list[int], expected_latitude: float
+) -> None:
+    """Decoded MVT y coordinates increase from the south to the north."""
+    decoded = _decode_mvt_geometry_to_wgs84(
+        {"type": "Point", "coordinates": coordinates}
+    )
+
+    assert decoded.x == pytest.approx(0)
+    assert decoded.y == pytest.approx(expected_latitude)
 
 
 @pytest.mark.integration

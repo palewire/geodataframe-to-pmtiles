@@ -69,8 +69,7 @@ driver.
 
 **Input-side boundary handling (performed by this library before GDAL):**
 
-1. Any geometry whose bounding box lies *entirely* outside the Web Mercator
-   latitude extent (``|lat| > WEB_MERCATOR_LAT_LIMIT`` for all vertices) is
+1. Any geometry that does not intersect the Web Mercator latitude extent is
    detected before being passed to GDAL.  A :class:`UserWarning` is emitted
    (once per layer, not once per feature) and the feature is skipped.  Without
    this check GDAL would discard such features silently.
@@ -234,17 +233,22 @@ _OUT_OF_BOUNDS_WARNING = (
 def _is_outside_mercator_extent(geom: Any) -> bool:
     """Return True if *geom* lies entirely outside the Web Mercator latitude extent.
 
-    A geometry is "entirely outside" when *every* vertex is beyond the limit.
-    In practice this means the geometry's bounding box minimum or maximum
-    latitude exceeds ``WEB_MERCATOR_LAT_LIMIT`` without any part inside the
-    extent.  Geometries that straddle the boundary are passed through to GDAL
-    (which clips them to the tile boundary internally).
+    Bounding boxes identify the common cases quickly. A geometry intersection
+    check handles multipart geometries with components on opposite sides of the
+    valid latitude range. Geometries that intersect the boundary are passed to
+    GDAL, which clips them to the tile boundary internally.
     """
-    bounds = geom.bounds  # (minx, miny, maxx, maxy)
-    miny: float = float(bounds[1])
-    maxy: float = float(bounds[3])
-    # Entirely south of the southern limit, or entirely north of the northern limit.
-    return maxy < -WEB_MERCATOR_LAT_LIMIT or miny > WEB_MERCATOR_LAT_LIMIT
+    minx, miny, maxx, maxy = map(float, geom.bounds)
+    if maxy < -WEB_MERCATOR_LAT_LIMIT or miny > WEB_MERCATOR_LAT_LIMIT:
+        return True
+    if miny >= -WEB_MERCATOR_LAT_LIMIT and maxy <= WEB_MERCATOR_LAT_LIMIT:
+        return False
+
+    from shapely.geometry import box
+
+    return not geom.intersects(
+        box(minx - 1.0, -WEB_MERCATOR_LAT_LIMIT, maxx + 1.0, WEB_MERCATOR_LAT_LIMIT)
+    )
 
 
 def _load_gdal_modules() -> tuple[Any, Any, Any]:

@@ -870,6 +870,7 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
     { name = "pmtiles" },
+    { name = "shapely" },
 ]
 
 [package.dev-dependencies]
@@ -933,6 +934,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pmtiles", specifier = ">=3.3,<4" },
+    { name = "shapely", specifier = ">=2.0" },
 ]
 
 [package.metadata.requires-dev]
