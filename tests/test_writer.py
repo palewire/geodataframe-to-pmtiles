@@ -1,4 +1,4 @@
-"""Tests for geodataframe_to_pmtiles.write_pmtiles."""
+"""Tests for geodataframe_to_pmtiles.write."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from geodataframe_to_pmtiles import (
     TileOverflowError,
     UnsupportedCRSError,
     UnsupportedPropertyTypeError,
-    write_pmtiles,
+    write,
 )
 
 from .pmtiles_semantics import read_pmtiles_archive
@@ -74,7 +74,7 @@ def _open_pmtiles_bytes(data: bytes) -> tuple[gdal.Dataset, str]:  # noqa: F821
 
 def _write_safe(layers, output, **kwargs):
     """Write an archive through the default safe overflow policy."""
-    write_pmtiles(layers, output, **kwargs)
+    write(layers, output, **kwargs)
 
 
 def _write_ignore(layers, output, **kwargs):
@@ -84,7 +84,7 @@ def _write_ignore(layers, output, **kwargs):
     report overflow at coarse zoom levels; the test focus is output semantics,
     not overflow behaviour.
     """
-    write_pmtiles(layers, output, on_overflow="unsafe", **kwargs)
+    write(layers, output, on_overflow="unsafe", **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ def _skip_integration_without_gdal(request: pytest.FixtureRequest) -> None:
 
 @pytest.mark.integration
 def test_two_layer_archive_path(tmp_path: Path) -> None:
-    """write_pmtiles writes a two-layer archive to a Path and can be reopened."""
+    """write writes a two-layer archive to a Path and can be reopened."""
     from osgeo import gdal
 
     out = tmp_path / "two_layers.pmtiles"
@@ -137,7 +137,7 @@ def test_two_layer_archive_path(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_two_layer_archive_bytesio() -> None:
-    """write_pmtiles writes a two-layer archive to a BytesIO stream."""
+    """write writes a two-layer archive to a BytesIO stream."""
     buf = io.BytesIO()
     _write_safe(
         {"points": _points_gdf(), "lines": _lines_gdf()},
@@ -367,7 +367,7 @@ def test_numeric_zero_one_properties_remain_integers(tmp_path: Path) -> None:
 def test_mixed_boolean_properties_raise(values: list[object]) -> None:
     """Mixed Boolean values cannot silently acquire either meaning."""
     with pytest.raises(UnsupportedPropertyTypeError, match="mixes boolean"):
-        write_pmtiles(
+        write(
             {"lyr": _points_gdf(flag=values)},
             io.BytesIO(),
             on_overflow="unsafe",
@@ -540,7 +540,7 @@ def test_list_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
+        write({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 @pytest.mark.unit
@@ -552,7 +552,7 @@ def test_dict_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
+        write({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +577,7 @@ def test_feature_overflow_raises_before_path_is_overwritten(
     out.write_bytes(b"keep this archive")
 
     with pytest.raises(TileOverflowError) as caught:
-        write_pmtiles({"clustered": clustered}, out, min_zoom=0, max_zoom=0)
+        write({"clustered": clustered}, out, min_zoom=0, max_zoom=0)
 
     violations = caught.value.violations
     assert len(violations) == 1
@@ -610,7 +610,7 @@ def test_size_overflow_raises_before_stream_is_changed(
     stream.seek(0)
 
     with pytest.raises(TileOverflowError) as caught:
-        write_pmtiles({"dense": gdf}, stream, min_zoom=0, max_zoom=0)
+        write({"dense": gdf}, stream, min_zoom=0, max_zoom=0)
 
     violations = caught.value.violations
     assert violations
@@ -636,7 +636,7 @@ def test_unsafe_overflow_opt_out_warns_and_writes(
     monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
     buffer = io.BytesIO()
     with pytest.warns(UserWarning, match="unsafe"):
-        write_pmtiles(
+        write(
             {"lyr": _points_gdf()},
             buffer,
             min_zoom=0,
@@ -650,7 +650,7 @@ def test_unsafe_overflow_opt_out_warns_and_writes(
 def test_on_overflow_invalid_value_raises() -> None:
     """An invalid on_overflow value raises ValueError."""
     with pytest.raises(ValueError, match="on_overflow"):
-        write_pmtiles(
+        write(
             {"lyr": _points_gdf()},
             io.BytesIO(),
             on_overflow="drop",  # type: ignore[arg-type]
@@ -661,7 +661,7 @@ def test_on_overflow_invalid_value_raises() -> None:
 def test_missing_gdal_runtime_raises_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """write_pmtiles raises a runtime error if GDAL cannot be imported."""
+    """write raises a runtime error if GDAL cannot be imported."""
     from geodataframe_to_pmtiles import _writer as writer_module
 
     def _missing_osgeo(name: str, package: str | None = None) -> object:
@@ -672,7 +672,7 @@ def test_missing_gdal_runtime_raises_runtime_error(
     monkeypatch.setattr(writer_module, "import_module", _missing_osgeo)
 
     with pytest.raises(RuntimeError, match="GDAL Python bindings are required"):
-        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="unsafe")
+        write({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="unsafe")
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +744,7 @@ def test_default_feature_overflow_rejects_300001_z0_features(
     out = tmp_path / "overflow_300001.pmtiles"
 
     with pytest.raises(TileOverflowError) as caught:
-        write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+        write({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
 
     violation = caught.value.violations[0]
     assert violation.limit == "MAX_FEATURES"
@@ -813,9 +813,9 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_attribution_invalid_type_raises() -> None:
-    """write_pmtiles raises TypeError when attribution is not a str."""
+    """write raises TypeError when attribution is not a str."""
     with pytest.raises(TypeError, match="attribution"):
-        write_pmtiles(  # type: ignore[call-overload]
+        write(  # type: ignore[call-overload]
             {"lyr": _points_gdf()},
             io.BytesIO(),
             attribution=123,  # type: ignore[arg-type]
@@ -990,7 +990,7 @@ def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
 
 @pytest.mark.integration
 def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
-    """write_pmtiles stores attribution in metadata when output is a Path."""
+    """write stores attribution in metadata when output is a Path."""
     out = tmp_path / "attr.pmtiles"
     _write_safe({"pts": _points_gdf()}, out, attribution="Reuters, ECMWF")
 
@@ -1000,7 +1000,7 @@ def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_attribution_stored_in_metadata_bytesio() -> None:
-    """write_pmtiles stores attribution in metadata when output is a BytesIO."""
+    """write stores attribution in metadata when output is a BytesIO."""
     buf = io.BytesIO()
     _write_safe({"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF")
     buf.seek(0)
@@ -1118,7 +1118,7 @@ def test_attribution_era5_fixture(tmp_path: Path) -> None:
     gdf = gpd.read_file(fixture).to_crs("EPSG:4326")
 
     out = tmp_path / "era5.pmtiles"
-    write_pmtiles(
+    write(
         {"era5": gdf},
         out,
         min_zoom=0,
@@ -1376,7 +1376,7 @@ def test_inject_attribution_gzip_output_is_deterministic(
 
 @pytest.mark.integration
 def test_path_output_creates_file(tmp_path: Path) -> None:
-    """write_pmtiles creates a file at the given Path."""
+    """write creates a file at the given Path."""
     out = tmp_path / "out.pmtiles"
     _write_safe({"lyr": _points_gdf()}, out)
     assert out.exists()
@@ -1404,7 +1404,7 @@ def test_path_output_replace_failure_preserves_existing_file(
 
 @pytest.mark.integration
 def test_bytesio_output_returns_bytes() -> None:
-    """write_pmtiles writes a non-empty byte stream to a BytesIO."""
+    """write writes a non-empty byte stream to a BytesIO."""
     buf = io.BytesIO()
     _write_safe({"lyr": _points_gdf()}, buf)
     assert buf.tell() > 0
@@ -1516,7 +1516,7 @@ def test_simplification_option(tmp_path: Path) -> None:
 def test_empty_layers_dict_raises() -> None:
     """An empty layers mapping raises EmptyLayerError."""
     with pytest.raises(EmptyLayerError):
-        write_pmtiles({}, io.BytesIO())
+        write({}, io.BytesIO())
 
 
 @pytest.mark.unit
@@ -1524,7 +1524,7 @@ def test_empty_geodataframe_raises() -> None:
     """A layer with zero features raises EmptyLayerError."""
     empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
     with pytest.raises(EmptyLayerError):
-        write_pmtiles({"empty": empty}, io.BytesIO())
+        write({"empty": empty}, io.BytesIO())
 
 
 @pytest.mark.unit
@@ -1532,7 +1532,7 @@ def test_missing_crs_raises() -> None:
     """A GeoDataFrame with no CRS raises MissingCRSError."""
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)])
     with pytest.raises(MissingCRSError, match="explicit source CRS"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
 
 
 @pytest.mark.integration
@@ -1541,7 +1541,7 @@ def test_wrong_crs_no_longer_raises_auto_reprojects() -> None:
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
     # Should not raise — EPSG:3857 is reprojected to EPSG:4326 automatically.
     buf = io.BytesIO()
-    write_pmtiles({"lyr": gdf}, buf)
+    write({"lyr": gdf}, buf)
     assert buf.tell() > 0
 
 
@@ -1558,7 +1558,7 @@ def test_unresolvable_crs_raises_unsupported_crs(
     monkeypatch.setattr(type(gdf.crs), "to_epsg", _boom)
 
     with pytest.raises(UnsupportedCRSError, match="cannot be resolved") as excinfo:
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert "bad crs" in str(excinfo.value.__cause__)
@@ -1577,7 +1577,7 @@ def test_transform_failure_raises_crs_transform_error(
     monkeypatch.setattr(gpd.GeoDataFrame, "to_crs", _boom)
 
     with pytest.raises(CRSTransformError, match="coordinate transformation") as excinfo:
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
 
     assert isinstance(excinfo.value.__cause__, ValueError)
     assert "transform failed" in str(excinfo.value.__cause__)
@@ -1585,10 +1585,10 @@ def test_transform_failure_raises_crs_transform_error(
 
 @pytest.mark.unit
 def test_non_mutation_of_input_gdf() -> None:
-    """write_pmtiles does not mutate the caller's GeoDataFrame CRS or geometries.
+    """write does not mutate the caller's GeoDataFrame CRS or geometries.
 
     This test does not require GDAL: reprojection is performed on a copy inside
-    write_pmtiles via gdf.to_crs(), which must not modify the input.  If GDAL is
+    write via gdf.to_crs(), which must not modify the input.  If GDAL is
     unavailable the call raises RuntimeError after the reprojection step, but the
     check happens before writing.
     """
@@ -1601,7 +1601,7 @@ def test_non_mutation_of_input_gdf() -> None:
     original_geom = list(gdf.geometry)
     with contextlib.suppress(RuntimeError):
         # GDAL not available in this environment; mutation check still valid
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
     assert gdf.crs == original_crs, "CRS of input GeoDataFrame must not be changed"
     assert list(gdf.geometry) == original_geom, (
         "Geometries of input GDF must not be changed"
@@ -1788,7 +1788,7 @@ def test_non_mutation_input_geometry_unchanged() -> None:
     )
     with contextlib.suppress(RuntimeError):
         # GDAL not available; mutation check is still valid
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
     # Original geometry must be unchanged.
     assert gdf.geometry.iloc[0].equals(orig_geom)
     assert gdf.crs.to_epsg() == 3857
@@ -1798,7 +1798,7 @@ def test_non_mutation_input_geometry_unchanged() -> None:
 def test_non_geodataframe_raises() -> None:
     """A non-GeoDataFrame value in layers raises TypeError."""
     with pytest.raises(TypeError):
-        write_pmtiles({"lyr": "not a gdf"}, io.BytesIO())  # type: ignore[arg-type]
+        write({"lyr": "not a gdf"}, io.BytesIO())  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
@@ -1814,21 +1814,21 @@ def test_unsupported_property_type_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError):
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write({"lyr": gdf}, io.BytesIO())
 
 
 @pytest.mark.unit
 def test_invalid_zoom_range_raises() -> None:
     """min_zoom > max_zoom raises ValueError."""
     with pytest.raises(ValueError, match="min_zoom"):
-        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), min_zoom=5, max_zoom=3)
+        write({"lyr": _points_gdf()}, io.BytesIO(), min_zoom=5, max_zoom=3)
 
 
 @pytest.mark.unit
 def test_zoom_out_of_range_raises() -> None:
     """Zoom levels outside 0-22 raise ValueError."""
     with pytest.raises(ValueError, match="max_zoom"):
-        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), max_zoom=30)
+        write({"lyr": _points_gdf()}, io.BytesIO(), max_zoom=30)
 
 
 # ---------------------------------------------------------------------------
@@ -2055,3 +2055,263 @@ def test_optimised_path_feature_order_preserved(tmp_path: Path) -> None:
         f"Feature order not preserved: first occurrences = {first_occurrences}"
     )
     ds = None
+
+
+# ---------------------------------------------------------------------------
+# gpm.write public API: invocation forms and invalid argument combinations
+# ---------------------------------------------------------------------------
+
+
+def test_write_single_gdf_without_layer_raises() -> None:
+    """write(gdf, output) without layer= raises TypeError."""
+    gdf = _points_gdf()
+    with pytest.raises(TypeError, match="layer"):
+        write(gdf, "ignored.pmtiles")  # type: ignore[call-overload]
+
+
+def test_write_mapping_with_layer_raises() -> None:
+    """write(mapping, output, layer=...) raises TypeError."""
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write({"pts": gdf}, buf, layer="pts")  # type: ignore[call-overload]
+
+
+def test_write_mapping_with_layer_none_raises() -> None:
+    """write(mapping, output, layer=None) raises TypeError.
+
+    Explicitly passing ``layer=None`` to the mapping form must be rejected
+    because *None* is an invalid layer argument in that context — it is not
+    the same as omitting the keyword entirely.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write({"pts": gdf}, buf, layer=None)  # type: ignore[call-overload]
+
+
+def test_write_single_gdf_with_layer_none_raises() -> None:
+    """write(gdf, output, layer=None) raises TypeError.
+
+    Explicitly passing ``layer=None`` to the single-frame form is as invalid
+    as omitting the keyword — both must raise TypeError.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write(gdf, buf, layer=None)  # type: ignore[call-overload]
+
+
+def test_write_single_gdf_with_layer_non_str_raises() -> None:
+    """write(gdf, output, layer=123) raises TypeError.
+
+    Passing a non-str value as ``layer`` must raise TypeError with a
+    message that names the offending type.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write(gdf, buf, layer=123)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("layer", ["", "   ", "\x00"])
+def test_write_single_gdf_with_invalid_layer_name_raises(layer: str) -> None:
+    """write(gdf, output, layer=...) rejects empty or unusable layer names."""
+    gdf = _points_gdf()
+    with pytest.raises(TypeError, match="non-empty"):
+        write(gdf, io.BytesIO(), layer=layer)
+
+
+@pytest.mark.integration
+def test_write_single_gdf_form(tmp_path: Path) -> None:
+    from osgeo import gdal
+
+    gdf = _points_gdf()
+    out = tmp_path / "single.pmtiles"
+    write(gdf, out, layer="mypoints", min_zoom=0, max_zoom=4, on_overflow="unsafe")
+
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    layer_names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "mypoints" in layer_names
+    ds = None
+
+
+@pytest.mark.integration
+def test_write_mapping_form(tmp_path: Path) -> None:
+    """write(mapping, output) produces a valid multi-layer archive."""
+    from osgeo import gdal
+
+    out = tmp_path / "multi.pmtiles"
+    write(
+        {"pts": _points_gdf(), "lns": _lines_gdf()},
+        out,
+        min_zoom=0,
+        max_zoom=4,
+        on_overflow="unsafe",
+    )
+
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    layer_names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "pts" in layer_names
+    assert "lns" in layer_names
+    ds = None
+
+
+def test_write_is_only_public_symbol() -> None:
+    """gpm.write exists and write_pmtiles is not exposed."""
+    import geodataframe_to_pmtiles as gpm
+
+    assert callable(gpm.write)
+    assert not hasattr(gpm, "write_pmtiles")
+
+
+# ---------------------------------------------------------------------------
+# Mapping guard: non-Mapping layers must raise TypeError before dict(...)
+# ---------------------------------------------------------------------------
+
+
+def test_layers_list_of_pairs_raises_type_error() -> None:
+    """Passing a list-of-pairs as 'layers' raises TypeError, not silently building a dict."""
+    import io
+
+    from geodataframe_to_pmtiles import write
+
+    gdf = _points_gdf()
+    pairs = [
+        ("lyr", gdf)
+    ]  # list of (name, GeoDataFrame) — looks dict-like but is not a Mapping
+    with pytest.raises(TypeError, match="Mapping"):
+        write(pairs, io.BytesIO())  # type: ignore[arg-type]
+
+
+def test_layers_generator_raises_type_error() -> None:
+    """Passing a generator as 'layers' raises TypeError."""
+    import io
+
+    from geodataframe_to_pmtiles import write
+
+    gdf = _points_gdf()
+
+    def _gen():
+        yield "lyr", gdf
+
+    with pytest.raises(TypeError, match="Mapping"):
+        write(_gen(), io.BytesIO())  # type: ignore[arg-type]
+
+
+def test_layers_mapping_subclass_accepted() -> None:
+    """A genuine Mapping subclass (e.g. OrderedDict) is accepted without error up to dispatch."""
+    import collections
+    import io
+
+    from geodataframe_to_pmtiles import write
+    from geodataframe_to_pmtiles.exceptions import EmptyLayerError, MissingCRSError
+
+    gdf_no_crs = gpd.GeoDataFrame(geometry=gpd.GeoSeries([]))
+    od = collections.OrderedDict([("lyr", gdf_no_crs)])
+    # Should not raise TypeError; will fail later (EmptyLayerError or MissingCRSError) but not on the Mapping check.
+    with pytest.raises((MissingCRSError, EmptyLayerError)):
+        write(od, io.BytesIO())
+
+
+# ---------------------------------------------------------------------------
+# String output path: GDAL integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_string_output_path_writes_valid_archive(tmp_path: Path) -> None:
+    """write accepts a plain str path and produces a readable PMTiles archive."""
+    from osgeo import gdal
+
+    out_str = str(tmp_path / "string_path.pmtiles")
+    write(
+        {"pts": _points_gdf()},
+        out_str,
+        min_zoom=0,
+        max_zoom=4,
+    )
+
+    out = Path(out_str)
+    assert out.exists(), "output file was not created"
+    assert out.stat().st_size > 0, "output file is empty"
+
+    ds = gdal.OpenEx(out_str, gdal.OF_VECTOR)
+    assert ds is not None, "GDAL could not open the written archive"
+    layer_names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "pts" in layer_names, f"expected layer 'pts', got {layer_names}"
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# Warning provenance: boundary and overflow warnings must point at gpm.write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_out_of_bounds_warning_points_at_write_call(tmp_path: Path) -> None:
+    """Out-of-bounds UserWarning filename is this test file (the gpm.write call site)."""
+    import warnings
+
+    from shapely.geometry import Point
+
+    from geodataframe_to_pmtiles import write
+
+    # GeoDataFrame with one in-bounds and one out-of-bounds point (beyond ~85.051° N).
+    gdf = gpd.GeoDataFrame(
+        {"v": [1, 2]},
+        geometry=[Point(0.0, 10.0), Point(0.0, 89.0)],
+        crs="EPSG:4326",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write({"lyr": gdf}, tmp_path / "provenance_oob.pmtiles", min_zoom=0, max_zoom=0)
+
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert user_warnings, "expected at least one UserWarning for out-of-bounds features"
+    w = user_warnings[0]
+    assert w.filename == __file__, (
+        f"Warning points to {w.filename!r} instead of this test file ({__file__!r}); "
+        "stacklevel in _write_impl may be wrong"
+    )
+
+
+@pytest.mark.integration
+def test_unsafe_overflow_warning_points_at_write_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """on_overflow='unsafe' UserWarning filename is this test file (the gpm.write call site)."""
+    import warnings
+
+    from geodataframe_to_pmtiles import _writer as writer_module
+    from geodataframe_to_pmtiles import write
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write(
+            {"lyr": _points_gdf()},
+            tmp_path / "provenance_overflow.pmtiles",
+            min_zoom=0,
+            max_zoom=0,
+            on_overflow="unsafe",
+        )
+
+    user_warnings = [
+        w
+        for w in caught
+        if issubclass(w.category, UserWarning) and "unsafe" in str(w.message)
+    ]
+    assert user_warnings, "expected UserWarning for unsafe overflow"
+    w = user_warnings[0]
+    assert w.filename == __file__, (
+        f"Warning points to {w.filename!r} instead of this test file ({__file__!r}); "
+        "stacklevel in _write_impl may be wrong"
+    )

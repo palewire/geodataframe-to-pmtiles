@@ -6,11 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed public API**: `write_pmtiles` is replaced by `gpm.write` (usable
+  as `import geodataframe_to_pmtiles as gpm`).  No compatibility alias is
+  provided.  `gpm.write` accepts either a `Mapping[str, GeoDataFrame]` or a
+  single `GeoDataFrame` with a non-empty explicit `layer=` name; the mapping form
+  rejects `layer`, and the single-frame form requires it.  All existing
+  options and behaviors are preserved.  Closes #16.
+
 ### Added
 
 - `TileLimitViolation` context on `TileOverflowError`, including the GDAL
   limit, configured and observed values, and tile coordinate when available.
-- `write_pmtiles` now emits a `UserWarning` and raises `EmptyLayerError` when
+- `gpm.write` now emits a `UserWarning` and raises `EmptyLayerError` when
   features lie entirely outside the Web Mercator latitude extent
   (beyond ±85.05112877980659°), replacing the previous silent drop by the GDAL
   PMTiles driver.  Features that straddle the boundary are still passed through
@@ -20,7 +29,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Compact offline fixtures and boundary/antimeridian semantic tests covering
   polar-point exclusion, polygon clipping, antimeridian split MultiPolygon,
   ERA5 z-0 tile-fragment counts, and south-polar z-7/z-8 buffer differences.
-- `write_pmtiles` now accepts GeoDataFrames in **any explicit, resolvable
+- `gpm.write` now accepts GeoDataFrames in **any explicit, resolvable
   CRS** — not only EPSG:4326.  Each layer is automatically reprojected to
   EPSG:4326 with traditional GIS X/Y axis order before writing; input
   GeoDataFrames and geometries are never mutated.  Mixed-CRS layer mappings
@@ -33,9 +42,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `UnsupportedCRSError` is no longer raised for non-EPSG:4326 inputs; it is
   now raised only when the CRS definition itself cannot be resolved by the
   installed geospatial stack.  Callers that previously called
-  `gdf.to_crs("EPSG:4326")` before `write_pmtiles` can keep doing so — the
+  `gdf.to_crs("EPSG:4326")` before `gpm.write` can keep doing so — the
   behaviour is unchanged — but the call is no longer required.
-- `write_pmtiles(layers, output, ...)` public API that writes PMTiles vector
+- `gpm.write(layers, output, ...)` public API that writes PMTiles vector
   archives from one or more GeoPandas GeoDataFrames using GDAL's native PMTiles
   vector driver - no subprocesses, no temporary files.
 - Real-world ERA5 climate and upstream Tippecanoe semantic conformance tests
@@ -46,7 +55,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Archive-wide `min_zoom` / `max_zoom` options (defaults: 0 / 8, matching the
   climate-monitor contract of z0-8 for general data).
 - `name` and `description` metadata options stored in the archive.
-- `attribution: str` parameter for `write_pmtiles`; stores a TileJSON-compliant
+- `attribution: str` parameter for `gpm.write`; stores a TileJSON-compliant
   attribution string in the archive's metadata block under the `"attribution"`
   key.  Unicode and HTML are preserved exactly.  When omitted or set to `""`
   (the default) the key is not added.  Attribution is injected after GDAL
@@ -84,12 +93,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `write_pmtiles()` now rejects GDAL feature-cap rebuilds and size-driven
+- `gpm.write()` now rejects GDAL feature-cap rebuilds and size-driven
   geometry recoding by default, before changing a Path or stream destination.
   `on_overflow="unsafe"` is the explicit warned opt-out for lossy GDAL output.
 - Point-layer export batches geometry conversion and property preparation to
   reduce Python overhead while preserving output semantics.
-- Removed GDAL as a hard pip dependency, made `write_pmtiles()` importable
+- Removed GDAL as a hard pip dependency, made `gpm.write()` importable
   without GDAL, and switched CI test jobs to provision native GDAL separately.
 
 ### Fixed

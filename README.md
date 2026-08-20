@@ -10,7 +10,7 @@ subprocesses, no temporary files.
 pip install geodataframe-to-pmtiles
 ```
 
-> **Note:** The library itself is pure Python, but `write_pmtiles()` needs a
+> **Note:** The library itself is pure Python, but `write()` needs a
 > native GDAL runtime with the PMTiles driver available. The package imports
 > without GDAL; calling the writer without it raises a clear `RuntimeError`.
 > In CI we install GDAL from conda-forge. Locally, install GDAL separately via
@@ -22,13 +22,13 @@ pip install geodataframe-to-pmtiles
 ```python
 import geopandas as gpd
 from pathlib import Path
-from geodataframe_to_pmtiles import write_pmtiles
+from geodataframe_to_pmtiles import write
 
 # Any explicit CRS is accepted — reprojection to EPSG:4326 is automatic.
 points = gpd.read_file("points.geojson")
 polygons = gpd.read_file("polys.geojson")
 
-write_pmtiles(
+write(
     {"points": points, "polygons": polygons},
     Path("output.pmtiles"),
     min_zoom=0,
@@ -40,7 +40,7 @@ write_pmtiles(
 )
 ```
 
-GeoDataFrames passed to `write_pmtiles()` must already carry a CRS. If your
+GeoDataFrames passed to `write()` must already carry a CRS. If your
 source format does not store CRS metadata, set one before writing:
 
 ```python
@@ -54,7 +54,15 @@ Write to a `BytesIO` stream instead of a file:
 import io
 
 buf = io.BytesIO()
-write_pmtiles({"points": points}, buf)
+write({"points": points}, buf)
+```
+
+Write a single GeoDataFrame with an explicit layer name:
+
+```python
+import geodataframe_to_pmtiles as gpm
+
+gpm.write(points, Path("output.pmtiles"), layer="points")
 ```
 
 ## Test coverage
@@ -70,12 +78,25 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
 the full API reference.
 
-### `write_pmtiles(layers, output, *, min_zoom, max_zoom, name, description, json_fields, on_overflow, simplification)`
+### `write` — two call forms
+
+**Mapping form** — multiple named layers:
+
+```
+write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
+```
+
+**Single-frame form** — one layer with an explicit name:
+
+```
+write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
+```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `layers` | `dict[str, GeoDataFrame]` | required | Layer name → GeoDataFrame mapping. Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
-| `output` | `Path \| BinaryIO` | required | Destination path or binary stream. |
+| `layers` | `Mapping[str, GeoDataFrame]` or `GeoDataFrame` | required | Layer name → GeoDataFrame mapping (mapping form), or a single GeoDataFrame (single-frame form, requires `layer`). Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
+| `output` | `str \| Path \| BinaryIO` | required | Destination file path (string or Path) or binary stream. |
+| `layer` | `str` | *(omit for mapping)* | Non-empty layer name. Required for the single-frame form; must be omitted entirely when `layers` is a mapping. |
 | `min_zoom` | `int` | `0` | Archive-wide minimum zoom level (0-22). |
 | `max_zoom` | `int` | `8` | Archive-wide maximum zoom level (0-22). |
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |

@@ -18,7 +18,7 @@ changelog
 pip install geodataframe-to-pmtiles
 ```
 
-> **Note:** The library itself is pure Python, but `write_pmtiles()` needs a
+> **Note:** The library itself is pure Python, but `gpm.write()` needs a
 > native GDAL runtime with the PMTiles driver available. The package imports
 > without GDAL; calling the writer without it raises a clear `RuntimeError`.
 > In CI we install GDAL from conda-forge. Locally, install GDAL separately via
@@ -29,13 +29,14 @@ pip install geodataframe-to-pmtiles
 
 ```python
 import geopandas as gpd
+import geodataframe_to_pmtiles as gpm
 from pathlib import Path
-from geodataframe_to_pmtiles import write_pmtiles
 
 points = gpd.read_file("points.geojson")
 lines = gpd.read_file("lines.geojson")
 
-write_pmtiles(
+# Write a mapping of named GeoDataFrames
+gpm.write(
     {"points": points, "lines": lines},
     Path("output.pmtiles"),
     min_zoom=0,
@@ -45,9 +46,12 @@ write_pmtiles(
     attribution="© OpenStreetMap contributors",  # optional TileJSON attribution
     on_overflow="error",  # default: reject reported tile-level data loss
 )
+
+# Or write a single GeoDataFrame with an explicit layer name
+gpm.write(points, Path("output.pmtiles"), layer="points")
 ```
 
-GeoDataFrames passed to `write_pmtiles()` must already carry a CRS. If your
+GeoDataFrames passed to `gpm.write()` must already carry a CRS. If your
 source format does not store CRS metadata, set one before writing:
 
 ```python
@@ -59,9 +63,10 @@ Write to a `BytesIO` stream (useful in web servers or pipelines):
 
 ```python
 import io
+import geodataframe_to_pmtiles as gpm
 
 buf = io.BytesIO()
-write_pmtiles({"points": points}, buf)
+gpm.write({"points": points}, buf)
 buf.seek(0)
 # buf.read() contains the raw PMTiles bytes
 ```
@@ -70,7 +75,7 @@ buf.seek(0)
 
 The test suite includes semantic conformance coverage for a real-world ERA5
 climate fixture and a few upstream Tippecanoe cases. Those tests write the
-fixtures with `write_pmtiles()`, then decode the PMTiles archive with the
+fixtures with `gpm.write()`, then decode the PMTiles archive with the
 official `pmtiles` reader and `mapbox-vector-tile` so the checks stay focused
 on public behavior: header metadata, source-layer names, property schema, hole
 preservation, and input order.
@@ -82,7 +87,7 @@ preservation, and input order.
 All GeoDataFrames must carry an explicit CRS.  Non-EPSG:4326 inputs are
 auto-reprojected to WGS 84, while a GeoDataFrame with no CRS set raises
 :class:`~geodataframe_to_pmtiles.MissingCRSError`.  If your source format does
-not store CRS metadata, set one before calling `write_pmtiles`:
+not store CRS metadata, set one before calling `gpm.write()`:
 
 ```python
 gdf = gdf.set_crs("EPSG:4326")
@@ -115,7 +120,7 @@ By default (`json_fields=None`), all `list` and `dict` columns are
 auto-JSON-encoded.  To be more explicit, pass a list of column names:
 
 ```python
-write_pmtiles(
+gpm.write(
     {"lyr": gdf},
     output,
     json_fields=["tags", "metadata"],  # only these columns are JSON-encoded
@@ -205,7 +210,7 @@ Practical guidance:
   `BytesIO` buffer, and merge the raw bytes with a tool such as
   `pmtiles merge`.
 
-* **Parallel workers** — `write_pmtiles` is stateless and can be called
+* **Parallel workers** — `gpm.write` is stateless and can be called
   in separate processes (not threads; GDAL/GIL contention affects threads)
   via `concurrent.futures.ProcessPoolExecutor`.  Each worker writes to its
   own `BytesIO` buffer.  Tile ranges must not overlap across workers, or

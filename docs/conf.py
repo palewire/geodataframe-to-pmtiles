@@ -47,11 +47,13 @@ intersphinx_mapping = {
 
 nitpick_ignore = [
     ("py:class", "gpd.GeoDataFrame"),
+    ("py:class", "GeoDataFrame"),
     ("py:class", "Path"),
     ("py:class", "BinaryIO"),
     ("py:class", "geodataframe_to_pmtiles.UnsupportedPropertyTypeError"),
     ("py:class", "geodataframe_to_pmtiles.TileOverflowError"),
     ("py:class", "OverflowPolicy"),
+    ("py:class", "_MissingType"),
 ]
 
 linkcheck_timeout = 10
