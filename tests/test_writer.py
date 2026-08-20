@@ -283,6 +283,11 @@ def test_float_properties(tmp_path: Path) -> None:
             [True, None, False],
             id="object-bool-null",
         ),
+        pytest.param(
+            pd.array([pd.NA, pd.NA, pd.NA], dtype="boolean"),
+            [None, None, None],
+            id="all-null-pandas-nullable-boolean",
+        ),
         pytest.param([True, True, True], [True, True, True], id="all-true"),
         pytest.param([False, False, False], [False, False, False], id="all-false"),
     ],
@@ -293,8 +298,15 @@ def test_boolean_properties_decode_as_native_mvt_booleans(
     expected: list[bool | None],
 ) -> None:
     """Official PMTiles and MVT decoders return Python booleans, not integers."""
+    from osgeo import gdal, ogr
+
     out = tmp_path / "bool.pmtiles"
     _write_ignore({"lyr": _points_gdf(flag=values)}, out, min_zoom=0, max_zoom=0)
+
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("flag"))
+    assert fld.GetSubType() == ogr.OFSTBoolean
 
     _, _, layers = read_pmtiles_archive(out)
     decoded = [
@@ -308,8 +320,15 @@ def test_boolean_properties_decode_as_native_mvt_booleans(
 @pytest.mark.integration
 def test_numeric_zero_one_properties_remain_integers(tmp_path: Path) -> None:
     """Numeric binary columns do not acquire the Boolean field subtype."""
+    from osgeo import gdal, ogr
+
     out = tmp_path / "numeric-binary.pmtiles"
     _write_ignore({"lyr": _points_gdf(binary=[0, 1, 0])}, out, min_zoom=0, max_zoom=0)
+
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("binary"))
+    assert fld.GetSubType() == ogr.OFSTNone
 
     _, _, layers = read_pmtiles_archive(out)
     decoded = [
@@ -325,11 +344,16 @@ def test_numeric_zero_one_properties_remain_integers(tmp_path: Path) -> None:
     "values",
     [
         [True, 1, False],
+        [1, True, False],
         [np.bool_(True), np.int64(0), np.bool_(False)],
+        [True, "yes", False],
+        ["yes", True, False],
+        [True, 1, "yes"],
+        ["yes", 1, True],
     ],
 )
-def test_mixed_boolean_and_integer_properties_raise(values: list[object]) -> None:
-    """Mixed Boolean and integer values cannot silently acquire either meaning."""
+def test_mixed_boolean_properties_raise(values: list[object]) -> None:
+    """Mixed Boolean values cannot silently acquire either meaning."""
     with pytest.raises(UnsupportedPropertyTypeError, match="mixes boolean"):
         write_pmtiles(
             {"lyr": _points_gdf(flag=values)},

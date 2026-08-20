@@ -285,6 +285,8 @@ def _infer_property_kind(
         # Keep every value in the column as a string field so JSON payloads
         # never get coerced into zeroes by a numeric OGR field definition.
         return "string"
+    if first_non_null is _missing and pd.api.types.is_bool_dtype(series.dtype):
+        return "bool"
     if "bool" in property_kinds and len(property_kinds) > 1:
         raise UnsupportedPropertyTypeError(
             f"Column '{col_name}' mixes boolean and non-boolean values. Boolean "

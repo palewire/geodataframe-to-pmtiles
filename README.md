@@ -87,10 +87,11 @@ the full API reference.
 | `None` / `pd.NA` | null | |
 | other | — | `UnsupportedPropertyTypeError` |
 
-Boolean columns may contain nulls, including pandas `BooleanDtype` values.
-They must not mix booleans with numeric `0` or `1`: those are integers and
-remain numeric. Mixed scalar boolean/non-boolean columns raise
-`UnsupportedPropertyTypeError` instead of silently changing values.
+Boolean columns may contain nulls, including pandas `BooleanDtype` values even
+if every value is null. They must not mix booleans with numeric `0` or `1`:
+those are integers and remain numeric. Mixed scalar boolean/non-boolean
+columns raise `UnsupportedPropertyTypeError` instead of silently changing
+values.
 
 ### Exceptions
 

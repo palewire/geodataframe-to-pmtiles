@@ -57,9 +57,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Boolean properties, including NumPy and pandas nullable booleans, now encode
-  as native MVT booleans. Nulls remain absent, numeric `0`/`1` columns remain
-  numeric, and mixed scalar boolean/non-boolean columns raise an error instead
-  of being silently coerced.
+  as native MVT booleans. Nulls remain absent, including all-null pandas
+  `BooleanDtype` columns; numeric `0`/`1` columns remain numeric; and mixed
+  scalar boolean/non-boolean columns raise an error instead of being silently
+  coerced.
 - Structured list/dict columns now force String fields before writing, so mixed
   columns round-trip as explicit JSON strings instead of being silently coerced
   into numeric zeroes by OGR.

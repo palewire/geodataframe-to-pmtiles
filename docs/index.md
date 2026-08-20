@@ -93,9 +93,9 @@ gdf = gdf.to_crs("EPSG:4326")
 | anything else | — | raises `UnsupportedPropertyTypeError` |
 
 Boolean values are stored with MVT's native `bool_value` encoding. Columns may
-contain nulls, including pandas `BooleanDtype` values. A scalar column cannot
-mix booleans with numeric `0` or `1`, because those are integers and remain
-numeric; such mixed columns raise
+contain nulls, including pandas `BooleanDtype` values even if every value is
+null. A scalar column cannot mix booleans with numeric `0` or `1`, because
+those are integers and remain numeric; such mixed columns raise
 :class:`~geodataframe_to_pmtiles.UnsupportedPropertyTypeError` instead of being
 silently coerced. List- and dict-valued properties are explicitly JSON-encoded
 via `json.dumps`; this is intentional and tested.
