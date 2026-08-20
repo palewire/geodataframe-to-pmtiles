@@ -23,18 +23,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `UnsupportedPropertyTypeError` for unlisted list/dict columns.  GDAL's
   internal list handling is never allowed to leak through.
 - `on_overflow: Literal["error", "warn", "ignore"]` parameter (default
-  `"warn"`) for the GDAL tile-level drop policy.  Per-tile `MAX_FEATURES` is
-  derived from input (`max(300_000, total_features)`); `MAX_SIZE` is 10 MB.
-  `"error"` raises `TileOverflowError` before writing so callers must opt in.
-- `TileOverflowError` exception (subclass of `WritePMTilesError`).
+  `"warn"`) for the GDAL tile-level drop policy.  Fixed spike-validated
+  per-tile caps: `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB` (200,001 z0
+  features preserved in 630,430 bytes).  `MAX_FEATURES=0` does not disable
+  the limit.  `"error"` raises `TileOverflowError` before writing.
+- `TileOverflowError` exception documenting tested POC caps, GDAL's
+  silent-drop limitation, and why post-write enforcement is not possible.
 - Explicit CRS validation: only EPSG:4326 is accepted; `MissingCRSError`
   (explicit source CRS required) and `UnsupportedCRSError` are raised for
   invalid inputs.
 - `EmptyLayerError` for empty layer mappings or GeoDataFrames with no features.
-- Deterministic property normalisation: `str`, `bool` (as 0/1 integer),
-  `int` / `np.integer` (Integer64), `float` / `np.float_` (Real, NaN to null),
-  `datetime` (ISO 8601 string), `list` / `dict` (JSON-encoded, explicit),
-  `None` / `pd.NA` (null), with `UnsupportedPropertyTypeError` for other types.
+- Deterministic property normalisation: numpy scalars and
+  `datetime`/`pd.Timestamp` normalised to Python native types before OGR
+  `SetField` (which rejects them raw); `str`, `bool` (0/1 integer),
+  `int`/`np.integer` (Integer64), `float`/`np.float_` (Real, NaN to null),
+  `datetime` → ISO 8601 string, `list`/`dict` → JSON-encoded string,
+  `None`/`pd.NA` (null field).  `UnsupportedPropertyTypeError` for other types.
 - Features are written in input (DataFrame row) order for deterministic output.
 - `simplification` keyword argument to enable GDAL-side geometry simplification
   (disabled by default).

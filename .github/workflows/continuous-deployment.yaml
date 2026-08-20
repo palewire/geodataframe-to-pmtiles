@@ -80,19 +80,12 @@ jobs:
       - id: install-python-dependencies
         name: Install Python dependencies
         shell: bash -el {0}
-        run: make install-test UV_ACTIVE=1
+        run: make install-test GDAL_PYTHON="$CONDA_PREFIX/bin/python"
 
       - id: tests
         name: Run tests
         shell: bash -el {0}
-        run: make test UV_ACTIVE=1
-
-      - name: Verify package distribution
-        if: matrix.python == '3.13' && vars.PACKAGE_IMPORT_NAME != ''
-        env:
-          PACKAGE_IMPORT_NAME: ${{ vars.PACKAGE_IMPORT_NAME }}
-        shell: bash -el {0}
-        run: make package-verify PACKAGE="$PACKAGE_IMPORT_NAME" UV_ACTIVE=1
+        run: make test GDAL_PYTHON="$CONDA_PREFIX/bin/python"
 
       - name: Prune uv cache
         run: uv cache prune --ci

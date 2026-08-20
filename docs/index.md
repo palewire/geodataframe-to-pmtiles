@@ -106,11 +106,13 @@ GDAL's internal list-to-string conversion from leaking through.
 
 ### Overflow policy
 
-The GDAL PMTiles driver silently drops features when a tile exceeds its per-tile
-`MAX_FEATURES` (set to `max(300_000, total_features_across_all_layers)`) or
-`MAX_SIZE` (10 MB) limit. These are tested POC caps, not universal infinity.
-Dense spatial clustering can still produce overflow tiles; GDAL provides no
-post-write signal.
+The GDAL PMTiles driver silently drops features when a tile exceeds its fixed
+per-tile caps: **`MAX_FEATURES = 300,000`** and **`MAX_SIZE = 10 MB`**.
+These are spike-validated POC values — 200,001 z0 features were preserved
+in full (630,430 compressed bytes) — but they are **not unlimited**.  Setting
+`MAX_FEATURES=0` does not disable the limit; GDAL clamps it to its internal
+minimum.  Dense spatial clustering can produce tiles that exceed these caps,
+and GDAL provides no post-write overflow signal.
 
 * `on_overflow="error"` — raises :class:`~geodataframe_to_pmtiles.TileOverflowError`
   before any data is written; the caller must opt in to `"warn"` or `"ignore"`.

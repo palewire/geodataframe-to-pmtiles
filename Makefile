@@ -3,10 +3,12 @@
 UV ?= uv
 UV_PYTHON ?=
 UV_ACTIVE ?=
+GDAL_PYTHON ?=
 PACKAGE ?=
 COVERAGE_FAIL_UNDER ?= 80
 TEST_ARGS ?=
 
+ifeq ($(strip $(GDAL_PYTHON)),)
 UV_RUN_FLAGS :=
 UV_SYNC_FLAGS :=
 ifneq ($(UV_PYTHON),)
@@ -17,8 +19,14 @@ ifeq ($(UV_ACTIVE),1)
 UV_RUN_FLAGS := --active
 UV_SYNC_FLAGS := --active
 endif
-
 RUN = $(UV) run $(UV_RUN_FLAGS)
+INSTALL_TEST = $(UV) sync --group test --locked $(UV_SYNC_FLAGS)
+INSTALL_TEST_EXTRAS = $(UV) sync --group test --group test-extras --locked $(UV_SYNC_FLAGS)
+else
+RUN = $(GDAL_PYTHON) -m
+INSTALL_TEST = $(UV) pip install --python "$(GDAL_PYTHON)" --group test -e .
+INSTALL_TEST_EXTRAS = $(UV) pip install --python "$(GDAL_PYTHON)" --group test --group test-extras -e .
+endif
 
 .PHONY: all help install install-all install-dev install-test install-test-extras install-docs check verify diff-check lint format-check format fix type-check dependency-check workflow-check manifest-check test test-serial test-parallel coverage build package-check package-verify docs docs-check linkcheck build-docs serve-docs hooks clean
 
@@ -34,10 +42,10 @@ install-dev: ## Install dependencies for static checks
 	$(UV) sync --group dev --locked $(UV_SYNC_FLAGS)
 
 install-test: ## Install dependencies for tests
-	$(UV) sync --group test --locked $(UV_SYNC_FLAGS)
+	$(INSTALL_TEST)
 
 install-test-extras: ## Install optional test utilities
-	$(UV) sync --group test --group test-extras --locked $(UV_SYNC_FLAGS)
+	$(INSTALL_TEST_EXTRAS)
 
 install-docs: ## Install dependencies for documentation
 	$(UV) sync --group docs --locked $(UV_SYNC_FLAGS)

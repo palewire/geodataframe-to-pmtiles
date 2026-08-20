@@ -27,10 +27,13 @@ class TileOverflowError(WritePMTilesError):
     """Raised when ``on_overflow='error'`` and tile-level data loss cannot be ruled out.
 
     The GDAL PMTiles driver silently drops features when a tile exceeds its
-    ``MAX_SIZE`` or ``MAX_FEATURES`` per-tile limit.  This library sets both
-    limits generously (derived from input feature counts) to minimise the risk,
-    but the driver provides no post-write signal indicating that a drop
-    occurred.  When ``on_overflow='error'``, this exception is raised before
-    any data is written so callers can explicitly acknowledge the limitation by
-    switching to ``on_overflow='warn'`` or ``on_overflow='ignore'``.
+    fixed per-tile caps: ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``
+    (spike-validated: 200,001 z0 features preserved in 630,430 bytes).
+    Setting ``MAX_FEATURES=0`` does *not* disable the limit — GDAL clamps it
+    to its internal minimum.  The driver provides no post-write signal when a
+    drop occurs.
+
+    When ``on_overflow='error'``, this exception is raised before any data is
+    written so callers can explicitly acknowledge the limitation by switching to
+    ``on_overflow='warn'`` or ``on_overflow='ignore'``.
     """

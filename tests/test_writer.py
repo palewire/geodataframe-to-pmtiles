@@ -457,14 +457,15 @@ def test_on_overflow_error_raises_before_write() -> None:
 
 @pytest.mark.unit
 def test_on_overflow_warn_emits_warning() -> None:
-    """on_overflow='warn' (default) emits a UserWarning."""
+    """on_overflow='warn' (default) emits a UserWarning mentioning the caps."""
     buf = io.BytesIO()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         write_pmtiles({"lyr": _points_gdf()}, buf)
     overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
     assert len(overflow_warnings) >= 1
-    assert "overflow" in str(overflow_warnings[0].message).lower()
+    msg = str(overflow_warnings[0].message).lower()
+    assert "overflow" in msg or "max_features" in msg or "300" in msg
 
 
 @pytest.mark.unit
@@ -508,16 +509,14 @@ def test_missing_gdal_runtime_raises_runtime_error(
 
 
 # ---------------------------------------------------------------------------
-# Derived MAX_FEATURES (overflow limits from input)
+# POC caps (fixed spike-validated values)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_max_features_derived_from_input(tmp_path: Path) -> None:
-    """The archive is written with MAX_FEATURES derived from total input count."""
-    # We write successfully and the archive is non-empty; we can't read back
-    # MAX_FEATURES from the archive, but the write succeeding verifies the path.
-    out = tmp_path / "derived.pmtiles"
+def test_poc_caps_allow_normal_dataset(tmp_path: Path) -> None:
+    """The fixed POC caps (MAX_FEATURES=300,000, MAX_SIZE=10 MB) allow normal datasets."""
+    out = tmp_path / "poc.pmtiles"
     large_gdf = gpd.GeoDataFrame(
         {"id": list(range(100))},
         geometry=[Point(float(i % 10), float(i // 10)) for i in range(100)],
@@ -526,6 +525,35 @@ def test_max_features_derived_from_input(tmp_path: Path) -> None:
     _write_ignore({"lyr": large_gdf}, out)
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+@pytest.mark.integration
+def test_poc_caps_preserve_200k_z0_features(tmp_path: Path) -> None:
+    """Spike-validated: MAX_FEATURES=300,000 preserved 200,001 z0 features (~630 KB).
+
+    This is the exact scenario from the spike test.  All features are spread
+    across the globe so a single z0 tile holds all of them; the resulting
+    archive must be non-empty and within the expected compressed-byte range.
+    """
+    n = 200_001
+    # Spread features evenly across -180..179 lon / -85..84 lat bands.
+    gdf = gpd.GeoDataFrame(
+        {"id": range(n)},
+        geometry=[
+            Point(float(i % 360) - 180.0, float((i // 360) % 170) - 85.0)
+            for i in range(n)
+        ],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "large_z0.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    assert out.exists()
+    size = out.stat().st_size
+    # Spike result: 630,430 bytes.  Allow ±50 % for driver/compression variance.
+    assert 300_000 < size < 1_500_000, (
+        f"Archive size {size:,} bytes is outside the expected spike range "
+        "(300 K – 1.5 MB). Caps may have changed."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,42 +10,59 @@ The package imports without GDAL present.  ``write_pmtiles`` raises a clear
 ``RuntimeError`` if the native GDAL runtime or PMTiles driver is unavailable at
 call time.
 
-.. rubric:: Property normalisation rules
+.. rubric:: Property normalisation
+
+OGR's ``Feature.SetField`` rejects several Python types directly.  The
+normaliser converts them before they reach OGR:
 
 +---------------------------+--------------------+------------------------------------------+
 | Python / pandas type      | MVT field type     | Notes                                    |
 +===========================+====================+==========================================+
 | ``str``                   | String             |                                          |
 +---------------------------+--------------------+------------------------------------------+
-| ``bool`` / ``np.bool_``   | Integer (0 or 1)   | MVT has no native bool type              |
+| ``bool`` / ``np.bool_``   | Integer (0 or 1)   | MVT has no native bool; decoded as 1/0   |
 +---------------------------+--------------------+------------------------------------------+
-| ``int`` / ``np.integer``  | Integer64          |                                          |
+| ``int`` / ``np.integer``  | Integer64          | numpy scalars normalised to ``int``      |
 +---------------------------+--------------------+------------------------------------------+
-| ``float`` / ``np.float_`` | Real               | ``NaN`` → null                           |
+| ``float`` / ``np.float_`` | Real               | numpy scalars normalised to ``float``;   |
+|                           |                    | ``NaN`` stored as null                   |
 +---------------------------+--------------------+------------------------------------------+
-| ``datetime``              | String             | ISO 8601, UTC if tz-aware                |
+| ``datetime.date`` /       | String             | Normalised to ISO 8601 via               |
+| ``datetime.datetime`` /   |                    | ``isoformat()`` before SetField.         |
+| ``pd.Timestamp``          |                    | GDAL date/datetime fields decode to      |
+|                           |                    | tuples; we store as OFTString to avoid   |
+|                           |                    | that.                                    |
 +---------------------------+--------------------+------------------------------------------+
-| ``list`` / ``dict``       | String             | JSON-encoded; column must appear in      |
+| ``list`` / ``dict``       | String             | Explicitly JSON-encoded via              |
+|                           |                    | ``json.dumps``; column must appear in    |
 |                           |                    | ``json_fields`` (or ``json_fields=None`` |
-|                           |                    | for auto).  Unlisted list/dict columns   |
-|                           |                    | raise ``UnsupportedPropertyTypeError``.  |
+|                           |                    | for auto).  Unlisted containers raise    |
+|                           |                    | ``UnsupportedPropertyTypeError``.        |
+|                           |                    | Never passed raw to SetField.            |
 +---------------------------+--------------------+------------------------------------------+
 | ``None`` / ``pd.NA``      | null field         |                                          |
 +---------------------------+--------------------+------------------------------------------+
 | anything else             | —                  | raises ``UnsupportedPropertyTypeError``  |
 +---------------------------+--------------------+------------------------------------------+
 
-.. rubric:: Overflow policy
+.. rubric:: Per-tile caps (tested POC values)
 
 The GDAL PMTiles driver silently drops features when a tile exceeds its
-per-tile ``MAX_SIZE`` (bytes) or ``MAX_FEATURES`` limit.  ``write_pmtiles``
-sets per-tile limits derived from the input: ``MAX_FEATURES`` is set to
-``max(300_000, total_features_across_all_layers)`` so that a single tile could
-theoretically hold every input feature.  ``MAX_SIZE`` is set to 10 MB.
+per-tile ``MAX_FEATURES`` or ``MAX_SIZE`` limit.  ``write_pmtiles`` uses the
+following fixed caps, which were validated by spike testing:
 
-Despite these generous limits, dense spatial clustering at coarse zoom levels
-can still produce tiles that exceed the limit.  The GDAL driver provides no
-post-write signal when a drop occurs.
+* ``MAX_FEATURES = 300_000`` per tile
+* ``MAX_SIZE = 10_000_000`` bytes (10 MB) per tile
+
+**Spike result:** 200,001 point features at zoom 0 were preserved in full
+and produced a 630,430-byte compressed archive with these caps.
+
+These are **POC values, not universal limits**.  A single dense tile
+(e.g. all features in a 40 km x 40 km area at z8) could still exceed 300 K
+features.  Setting ``MAX_FEATURES=0`` does *not* disable the limit — GDAL
+clamps it to its internal minimum rather than treating 0 as "unlimited".
+
+The GDAL driver provides no post-write signal when a drop occurs.
 
 Use ``on_overflow`` to control the library's response:
 
@@ -61,11 +78,39 @@ The GDAL PMTiles vector driver's ``CONF`` creation option was investigated as
 a means of embedding an ``attribution`` field in the TileJSON metadata block.
 Testing with GDAL 3.12.2 showed that the ``attribution`` key passed via
 ``CONF`` is **not written to the raw archive bytes** and **not returned by
-``ds.GetMetadata()`` on read-back**.  Attribution therefore cannot be round-
-tripped reliably through this backend without direct byte-level patching of
-the PMTiles file, which is outside the scope of this POC.  The parameter has
-been intentionally omitted from the public API; support can be added in a
-future iteration once a reliable mechanism is found.
+``ds.GetMetadata()`` on read-back**.  Official PMTiles attribution would
+require rebuilding the archive with byte-level patching, which is outside the
+scope of this POC.  The parameter is intentionally omitted from the public
+API.
+
+.. rubric:: CONF per-layer zoom (future extension point)
+
+The GDAL CONF creation option also supports per-layer ``minzoom``,
+``maxzoom``, and ``target_name`` overrides via a JSON object.  For example::
+
+    CONF = {"layers": {"my_layer": {"minzoom": 5, "maxzoom": 8}}}
+
+The current API exposes only archive-wide ``min_zoom`` / ``max_zoom``.  Per-
+layer overrides can be added to the CONF dict if finer control is needed,
+but this is not yet part of the public interface.
+
+.. rubric:: Alternative in-memory path (VectorTranslate)
+
+An alternative implementation was investigated using GDAL's
+``VectorTranslate``::
+
+    gdal.VectorTranslate(
+        "/vsimem/out.pmtiles",
+        mem_ds,
+        format="PMTiles",
+        srcSRS="EPSG:4326",
+        dstSRS="EPSG:3857",
+    )
+
+This path reprojects to EPSG:3857 (the MVT native CRS) before handing off to
+the driver.  The current implementation uses ``CreateDataSource`` directly and
+passes EPSG:4326 SRS objects, letting the driver handle reprojection
+internally.  Both paths produce valid archives.
 
 .. rubric:: Feature order
 
@@ -113,11 +158,12 @@ DEFAULT_MIN_ZOOM: int = 0
 #: Default archive-wide maximum zoom level.
 DEFAULT_MAX_ZOOM: int = 8
 
-# Floor for per-tile feature limit even when input is small.
-_MIN_MAX_FEATURES: int = 300_000
-
-# Per-tile size ceiling (bytes).  10 MB was the tested POC cap.
-_MAX_SIZE_BYTES: int = 10_000_000
+# Spike-validated per-tile caps.  200,001 z0 point features were preserved
+# in full at these values (630,430 compressed bytes).  They are NOT unlimited:
+# GDAL clamps MAX_FEATURES=0 to its internal minimum rather than disabling the
+# limit.  Dense tiles may still exceed these caps and produce silent drops.
+_POC_MAX_FEATURES: int = 300_000
+_POC_MAX_SIZE: int = 10_000_000  # bytes per tile (~10 MB)
 
 PropertyKind = Literal["string", "int", "float", "bool"]
 
@@ -277,12 +323,13 @@ OverflowPolicy = Literal["error", "warn", "ignore"]
 
 _OVERFLOW_WARNING = (
     "The GDAL PMTiles driver silently drops features when a tile exceeds its "
-    "per-tile MAX_SIZE or MAX_FEATURES limit.  Per-tile limits are set "
-    "generously (MAX_FEATURES = max(300_000, total_features); MAX_SIZE = "
-    "10 MB) to minimise the risk, but dense spatial clustering at coarse zoom "
-    "levels can still trigger silent drops.  GDAL provides no post-write "
-    "signal when a drop occurs.  Verify the output independently for "
-    "high-density datasets.  Pass on_overflow='ignore' to suppress this "
+    f"per-tile MAX_FEATURES ({_POC_MAX_FEATURES:,}) or MAX_SIZE "
+    f"({_POC_MAX_SIZE // 1_000_000} MB) limit.  These are spike-validated POC "
+    "caps (200,001 z0 features preserved in 630,430 bytes) but are not "
+    "unlimited: a single dense tile could still exceed them.  Setting "
+    "MAX_FEATURES=0 does not disable the limit; GDAL clamps it to its internal "
+    "minimum.  GDAL provides no post-write overflow signal.  Verify the output "
+    "for high-density datasets.  Pass on_overflow='ignore' to suppress this "
     "warning, or on_overflow='error' to refuse to write instead."
 )
 
@@ -365,13 +412,15 @@ def write_pmtiles(
 
     Notes
     -----
-    List- and dict-valued properties are explicitly JSON-encoded to strings.
-    Boolean values are stored as integers (1 for True, 0 for False) because
-    the MVT specification does not include a dedicated boolean type.
+    List- and dict-valued properties are explicitly JSON-encoded to strings;
+    they are never passed raw to ``OGR Feature.SetField`` (which rejects them).
+    Boolean values are stored as integers (1 / 0) because MVT has no native
+    bool type.  numpy scalars and ``datetime``/``pd.Timestamp`` objects are
+    normalised to Python native types before reaching OGR.
 
-    Per-tile ``MAX_FEATURES`` is derived from the input:
-    ``max(300_000, total_features_across_all_layers)``.  ``MAX_SIZE`` is fixed
-    at 10 MB.
+    Per-tile caps are fixed spike-validated POC values:
+    ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``.  They are not
+    unlimited; see the module docstring for details and the tested result.
     """
     import geopandas as gpd
 
@@ -441,19 +490,15 @@ def write_pmtiles(
     # ------------------------------------------------------------------
     # Overflow policy
     # ------------------------------------------------------------------
-    total_features = sum(len(gdf) for gdf in layers.values())
-    # Derive a generous per-tile MAX_FEATURES from the input so that a
-    # single tile could theoretically contain all features.
-    derived_max_features = max(_MIN_MAX_FEATURES, total_features)
-
     if on_overflow == "error":
         msg = (
             f"on_overflow='error': refusing to write because tile-level "
             f"data loss cannot be ruled out.  The GDAL PMTiles driver "
-            f"silently drops features when a tile exceeds its per-tile "
-            f"MAX_FEATURES ({derived_max_features:,}) or MAX_SIZE "
-            f"({_MAX_SIZE_BYTES / 1_000_000:.0f} MB) limit, and provides "
-            f"no post-write signal when a drop occurs.  "
+            f"silently drops features when a tile exceeds its fixed per-tile "
+            f"caps (MAX_FEATURES={_POC_MAX_FEATURES:,}, "
+            f"MAX_SIZE={_POC_MAX_SIZE // 1_000_000} MB), and provides no "
+            f"post-write signal when a drop occurs.  Setting MAX_FEATURES=0 "
+            f"does not disable the limit.  "
             f"Pass on_overflow='warn' or on_overflow='ignore' to proceed "
             f"after acknowledging this limitation."
         )
@@ -481,8 +526,8 @@ def write_pmtiles(
     ds_options: list[str] = [
         f"MINZOOM={min_zoom}",
         f"MAXZOOM={max_zoom}",
-        f"MAX_SIZE={_MAX_SIZE_BYTES}",
-        f"MAX_FEATURES={derived_max_features}",
+        f"MAX_SIZE={_POC_MAX_SIZE}",
+        f"MAX_FEATURES={_POC_MAX_FEATURES}",
     ]
     if name:
         ds_options.append(f"NAME={name}")

@@ -91,14 +91,16 @@ the full API reference.
 
 ## Overflow policy
 
-The GDAL PMTiles driver silently drops features when a tile exceeds per-tile
-`MAX_FEATURES` or `MAX_SIZE` limits. `write_pmtiles` sets tested POC caps
-derived from the input (`MAX_FEATURES = max(300_000, total_features)`,
-`MAX_SIZE = 10 MB`) to reduce the risk, but per-tile overflow with dense
-spatial data is possible and **cannot be detected post-write through this API**.
+The GDAL PMTiles driver silently drops features when a tile exceeds its fixed
+per-tile caps: **`MAX_FEATURES = 300,000`** and **`MAX_SIZE = 10 MB`**.
+These are spike-validated POC values (200,001 z0 features preserved in
+630,430 compressed bytes) — not unlimited.  Setting `MAX_FEATURES=0` does
+not disable the limit; GDAL clamps it to its internal minimum.  Dense spatial
+clustering can still produce tiles that exceed the caps, and GDAL provides no
+post-write overflow signal.
 
 * `on_overflow="error"` — refuses to write; caller must opt in to `"warn"` or
-  `"ignore"` after reviewing the limitation.
+  `"ignore"` after acknowledging the limitation.
 * `on_overflow="warn"` (default) — emits a `UserWarning` before writing.
 * `on_overflow="ignore"` — writes silently.
 
