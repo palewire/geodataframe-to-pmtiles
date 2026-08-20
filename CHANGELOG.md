@@ -10,6 +10,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `TileLimitViolation` context on `TileOverflowError`, including the GDAL
   limit, configured and observed values, and tile coordinate when available.
+- `write_pmtiles` now emits a `UserWarning` and raises `EmptyLayerError` when
+  features lie entirely outside the Web Mercator latitude extent
+  (beyond ±85.05112877980659°), replacing the previous silent drop by the GDAL
+  PMTiles driver.  Features that straddle the boundary are still passed through
+  to GDAL for clipping as before.
+- `WEB_MERCATOR_LAT_LIMIT` constant exported from
+  `geodataframe_to_pmtiles._writer` for downstream use.
+- Compact offline fixtures and boundary/antimeridian semantic tests covering
+  polar-point exclusion, polygon clipping, antimeridian split MultiPolygon,
+  ERA5 z-0 tile-fragment counts, and south-polar z-7/z-8 buffer differences.
+
 - `write_pmtiles(layers, output, ...)` public API that writes PMTiles vector
   archives from one or more GeoPandas GeoDataFrames using GDAL's native PMTiles
   vector driver - no subprocesses, no temporary files.

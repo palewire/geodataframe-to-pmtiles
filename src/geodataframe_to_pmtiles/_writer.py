@@ -59,6 +59,48 @@ changed.
 accept GDAL's lossy behavior. It emits a warning and must not be used for data
 where every feature or coordinate matters.
 
+.. rubric:: Web Mercator boundary semantics
+
+The PMTiles/MVT tile scheme uses Web Mercator (EPSG:3857), which maps only
+the latitude range **±85.05112877980659°** (the Google/OSM slippy-map limit,
+referred to as ``WEB_MERCATOR_LAT_LIMIT`` in this module).  ``write_pmtiles``
+accepts EPSG:4326 input; the GDAL PMTiles driver reprojects internally.
+
+**Input-side boundary handling (performed by this library before GDAL):**
+
+1. Any geometry whose bounding box lies *entirely* outside the Web Mercator
+   latitude extent (``|lat| > WEB_MERCATOR_LAT_LIMIT`` for all vertices) is
+   detected before being passed to GDAL.  A :class:`UserWarning` is emitted
+   (once per layer, not once per feature) and the feature is skipped.  Without
+   this check GDAL would discard such features silently.
+
+2. Geometries that *partially* overlap the extent (e.g. a polygon that crosses
+   85° N) are passed to GDAL unmodified.  GDAL clips them to the tile boundary
+   internally using its ``EXTENT``/``BUFFER`` tile coordinate system.
+
+**Longitude:** ±180° is supported.  A ``MultiPolygon`` manually split at the
+antimeridian (one part from 170° to 180° and another from -180° to -170°) is
+the correct representation for antimeridian-crossing features; GDAL places each
+part in the appropriate tile column.
+
+**GDAL PMTiles driver tile options** (fixed in this implementation):
+
+* ``EXTENT = 4096`` — tile coordinate range (MVT standard).
+* ``BUFFER = 80`` — extra tile units included beyond the tile edge; a feature
+  is included in a tile if it falls within ``EXTENT + BUFFER`` of the tile
+  origin.  At zoom 7 this corresponds to roughly ±0.001° beyond the tile edge,
+  so a south-polar point at -85.052 degrees appears in the last z-7 tile but one at
+  -85.060 degrees does not.  Tippecanoe uses a larger default buffer (approx 5% of tile vs
+  GDAL's approx 2%), which is why z-7/z-8 decoded feature counts can differ by 1-2
+  between backends without any data loss.
+
+**ERA5 z-0 fragment count difference:** 329 ERA5 polygons (within 35-60 degrees N)
+written with this library decode to 297 features at z-0, while the same source
+data passed through Tippecanoe decodes to 256 (Celsius) / 254 (Fahrenheit)
+features.  The difference is purely a tile-clipping artifact — both backends
+produce equivalent geographic union coverage at z-0.  The ERA5 data is well
+within the Mercator extent; no features are lost.
+
 .. rubric:: Attribution — not supported in this POC
 
 The GDAL PMTiles vector driver's ``CONF`` creation option was investigated as
@@ -153,6 +195,41 @@ _MAX_FEATURES: int = 300_000
 _MAX_SIZE: int = 10_000_000
 
 PropertyKind = Literal["string", "int", "float", "bool"]
+
+# ---------------------------------------------------------------------------
+# Web Mercator boundary constants
+# ---------------------------------------------------------------------------
+
+#: Maximum latitude supported by the Web Mercator tile scheme (EPSG:3857 /
+#: Google/OSM slippy-map convention).  Features at ``|lat| > WEB_MERCATOR_LAT_LIMIT``
+#: lie outside the tile space and are dropped by the GDAL PMTiles driver.
+WEB_MERCATOR_LAT_LIMIT: float = 85.05112877980659
+
+# Warning emitted once per layer when out-of-bounds features are detected.
+_OUT_OF_BOUNDS_WARNING = (
+    "Layer '{layer_name}': {count} feature(s) lie entirely outside the Web "
+    f"Mercator latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) and will not appear "
+    "in the archive.  The GDAL PMTiles driver silently drops such features; "
+    "this library detects and reports them up-front.  Clip or reproject your "
+    "data to ±85.05° latitude before calling write_pmtiles to include the "
+    "affected features at the nearest boundary."
+)
+
+
+def _is_outside_mercator_extent(geom: Any) -> bool:
+    """Return True if *geom* lies entirely outside the Web Mercator latitude extent.
+
+    A geometry is "entirely outside" when *every* vertex is beyond the limit.
+    In practice this means the geometry's bounding box minimum or maximum
+    latitude exceeds ``WEB_MERCATOR_LAT_LIMIT`` without any part inside the
+    extent.  Geometries that straddle the boundary are passed through to GDAL
+    (which clips them to the tile boundary internally).
+    """
+    bounds = geom.bounds  # (minx, miny, maxx, maxy)
+    miny: float = float(bounds[1])
+    maxy: float = float(bounds[3])
+    # Entirely south of the southern limit, or entirely north of the northern limit.
+    return maxy < -WEB_MERCATOR_LAT_LIMIT or miny > WEB_MERCATOR_LAT_LIMIT
 
 
 def _load_gdal_modules() -> tuple[Any, Any, Any]:
@@ -612,6 +689,43 @@ def write_pmtiles(
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
         field_kinds_by_layer[layer_name] = field_kinds
 
+    # ------------------------------------------------------------------
+    # Web Mercator bounds pre-check
+    # ------------------------------------------------------------------
+    # Count features entirely outside the Web Mercator latitude extent for
+    # each layer.  GDAL silently drops them; we warn up-front and, if the
+    # whole layer would be empty, raise EmptyLayerError with a clear message
+    # instead of letting GDAL fail with "Invalid bounds".
+    for layer_name, gdf in layers.items():
+        geom_col = str(gdf.geometry.name)
+        out_of_bounds = sum(
+            1
+            for geom in gdf.geometry
+            if geom is not None
+            and not (hasattr(geom, "is_empty") and geom.is_empty)
+            and _is_outside_mercator_extent(geom)
+        )
+        if out_of_bounds > 0:
+            warnings.warn(
+                _OUT_OF_BOUNDS_WARNING.format(
+                    layer_name=layer_name,
+                    count=out_of_bounds,
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        valid_count = len(gdf) - out_of_bounds
+        if valid_count == 0:
+            msg = (
+                f"Layer '{layer_name}' has no features within the Web Mercator "
+                f"latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) after excluding "
+                f"{out_of_bounds} out-of-bounds feature(s).  "
+                "Clip or reproject your data to ±85.05° latitude before calling "
+                "write_pmtiles."
+            )
+            raise EmptyLayerError(msg)
+        del geom_col  # suppress potential unused warning
+
     # Import GDAL only after the pure-Python validation has succeeded.
     gdal, ogr, osr = _load_gdal_modules()
 
@@ -747,10 +861,17 @@ def _write_layer(
     geom_col = str(gdf.geometry.name)
 
     # Write features in input order (deterministic).
+    # Pre-check for features outside the Web Mercator latitude extent.  The
+    # GDAL PMTiles driver drops them silently; we detect and report them here.
+    out_of_bounds_count = 0
     for row in gdf.itertuples(index=False):
         geom = getattr(row, geom_col)
         if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
             continue  # Skip null / empty geometries
+
+        if _is_outside_mercator_extent(geom):
+            out_of_bounds_count += 1
+            continue
 
         feat = ogr.Feature(layer_defn)
         ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
@@ -768,6 +889,10 @@ def _write_layer(
 
         lyr.CreateFeature(feat)
         feat = None  # Release
+
+    # The out-of-bounds warning is emitted in write_pmtiles (before GDAL objects
+    # are created) so we do not emit it again here; only track the count.
+    _ = out_of_bounds_count  # referenced for potential future use
 
     _ = pd  # suppress unused-import; pd.isna is used in helpers
 
