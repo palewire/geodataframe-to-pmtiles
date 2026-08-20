@@ -88,11 +88,12 @@ part in the appropriate tile column.
 * ``EXTENT = 4096`` — tile coordinate range (MVT standard).
 * ``BUFFER = 80`` — extra tile units included beyond the tile edge; a feature
   is included in a tile if it falls within ``EXTENT + BUFFER`` of the tile
-  origin.  At zoom 7 this corresponds to roughly ±0.001° beyond the tile edge,
-  so a south-polar point at -85.052 degrees appears in the last z-7 tile but one at
-  -85.060 degrees does not.  Tippecanoe uses a larger default buffer (approx 5% of tile vs
-  GDAL's approx 2%), which is why z-7/z-8 decoded feature counts can differ by 1-2
-  between backends without any data loss.
+  origin.  Features beyond the Web Mercator latitude limit (|lat| >
+  ~85.051°) are excluded before writing; ``write_pmtiles`` warns for each
+  such feature and raises ``EmptyLayerError`` if all features in a layer
+  are outside that bound.  Tippecanoe uses a larger default buffer (approx
+  5% of tile vs GDAL's approx 2%), which is why z-7/z-8 decoded feature
+  counts can differ by 1-2 between backends without any data loss.
 
 **ERA5 z-0 fragment count difference:** 329 ERA5 polygons (within 35-60 degrees N)
 written with this library decode to 297 features at z-0, while the same source
@@ -715,7 +716,13 @@ def write_pmtiles(
                 UserWarning,
                 stacklevel=2,
             )
-        valid_count = len(gdf) - out_of_bounds
+        valid_count = sum(
+            1
+            for geom in gdf.geometry
+            if geom is not None
+            and not (hasattr(geom, "is_empty") and geom.is_empty)
+            and not _is_outside_mercator_extent(geom)
+        )
         if valid_count == 0:
             msg = (
                 f"Layer '{layer_name}' has no features within the Web Mercator "

@@ -290,6 +290,39 @@ def test_mixed_bounds_points_only_in_bounds_appear() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Regression: null/empty geometries must not inflate valid_count
+# ---------------------------------------------------------------------------
+
+
+def test_all_null_geometry_raises_empty_layer_error() -> None:
+    """A layer whose only rows have null geometry raises EmptyLayerError.
+
+    Regression: valid_count was previously computed as ``len(gdf) - out_of_bounds``,
+    which did not subtract rows with null or empty geometry.  Such a layer
+    reaches GDAL with zero writable features and either fails silently or
+    produces an invalid archive.  Raising EmptyLayerError early is correct.
+    """
+    gdf = gpd.GeoDataFrame(
+        {"val": [1, 2]},
+        geometry=[None, None],  # type: ignore[arg-type]
+        crs="EPSG:4326",
+    )
+    with pytest.raises(EmptyLayerError):
+        write_pmtiles(layers={"pts": gdf}, output=io.BytesIO())
+
+
+def test_empty_geometry_raises_empty_layer_error() -> None:
+    """A layer whose only rows have empty geometry raises EmptyLayerError."""
+    gdf = gpd.GeoDataFrame(
+        {"val": [1]},
+        geometry=[Point()],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(EmptyLayerError):
+        write_pmtiles(layers={"pts": gdf}, output=io.BytesIO())
+
+
+# ---------------------------------------------------------------------------
 # Integration: antimeridian and longitude boundaries
 # ---------------------------------------------------------------------------
 
@@ -299,7 +332,6 @@ def test_point_at_antimeridian_east_appears() -> None:
     """A point at lon=+180 is included in the archive."""
     gdf = _point_gdf(180.0, 0.0)
     data = _write(gdf, max_zoom=1)
-    # At z1, tile (1,0) covers the eastern hemisphere
     assert count_features_in_tile(data, "pts", z=0, x=0, y=0) == 1
 
 
