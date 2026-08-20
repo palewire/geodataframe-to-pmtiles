@@ -20,4 +20,5 @@ recursive-include .devcontainer *
 recursive-include .github *
 recursive-include docs *.md *.py Makefile
 recursive-include tests *.py
+recursive-include tests/fixtures *
 include .env.example

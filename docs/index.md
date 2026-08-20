@@ -57,6 +57,15 @@ buf.seek(0)
 # buf.read() contains the raw PMTiles bytes
 ```
 
+## Test coverage
+
+The test suite includes semantic conformance coverage for a real-world ERA5
+climate fixture and a few upstream Tippecanoe cases. Those tests write the
+fixtures with `write_pmtiles()`, then decode the PMTiles archive with the
+official `pmtiles` reader and `mapbox-vector-tile` so the checks stay focused
+on public behavior: header metadata, source-layer names, property schema, hole
+preservation, and input order.
+
 ## Design notes
 
 ### CRS requirement

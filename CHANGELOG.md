@@ -11,6 +11,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `write_pmtiles(layers, output, ...)` public API that writes PMTiles vector
   archives from one or more GeoPandas GeoDataFrames using GDAL's native PMTiles
   vector driver - no subprocesses, no temporary files.
+- Real-world ERA5 climate and upstream Tippecanoe semantic conformance tests
+  with tracked fixture provenance and normalized PMTiles summaries.
 - Support for `pathlib.Path` and binary-stream (`BytesIO`) output modes.
 - Multiple named layers via a `dict[str, GeoDataFrame]` mapping; layer names
   are passed through from the mapping keys exactly.

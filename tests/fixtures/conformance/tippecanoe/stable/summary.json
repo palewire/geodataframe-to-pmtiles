@@ -1,0 +1,48 @@
+{
+  "header": {
+    "maxzoom": 0,
+    "minzoom": 0,
+    "tile_compression": "gzip",
+    "tile_type": "mvt"
+  },
+  "metadata": {
+    "description": "Tippecanoe feature-order fixture",
+    "name": "Stable fixture",
+    "vector_layers": [
+      {
+        "fields": [
+          "order"
+        ],
+        "id": "stable"
+      }
+    ]
+  },
+  "semantic": {
+    "feature_count": 15,
+    "feature_order": [
+      "one",
+      "one",
+      "two",
+      "three",
+      "two",
+      "four",
+      "three",
+      "five",
+      "six",
+      "four",
+      "seven",
+      "five",
+      "eight",
+      "nine",
+      "six"
+    ],
+    "features_with_holes": 0,
+    "geometry_types": {
+      "Point": 15
+    },
+    "property_keys": [
+      "order"
+    ],
+    "total_holes": 0
+  }
+}
