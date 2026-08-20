@@ -23,10 +23,10 @@ python benchmarks/bench_write_pmtiles.py --fast
 
 | scale | output | wall time | Python peak memory | archive | tiles |
 | ----: | :----- | --------: | -----------------: | ------: | ----: |
-| 1,000 | Path | 0.694 s | 1.0 MiB | 496 KiB | 3,726 |
-| 1,000 | BytesIO | 0.396 s | 1.0 MiB | 496 KiB | 3,726 |
-| 10,000 | Path | 2.777 s | 7.5 MiB | 3,853 KiB | 20,609 |
-| 10,000 | BytesIO | 3.144 s | 7.5 MiB | 3,853 KiB | 20,609 |
+| 1,000 | Path | 0.409 s | 1.0 MiB | 496 KiB | 3,726 |
+| 1,000 | BytesIO | 0.307 s | 1.0 MiB | 496 KiB | 3,726 |
+| 10,000 | Path | 2.911 s | 7.5 MiB | 3,853 KiB | 20,609 |
+| 10,000 | BytesIO | 3.130 s | 7.5 MiB | 3,853 KiB | 20,609 |
 
 `tracemalloc` measures Python allocations, not total process memory. Timing is
 environment-dependent, so these figures are a repeatable reference for this
