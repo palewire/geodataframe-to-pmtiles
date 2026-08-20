@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `TileLimitViolation` context on `TileOverflowError`, including the GDAL
+  limit, configured and observed values, and tile coordinate when available.
 - `write_pmtiles(layers, output, ...)` public API that writes PMTiles vector
   archives from one or more GeoPandas GeoDataFrames using GDAL's native PMTiles
   vector driver - no subprocesses, no temporary files.
@@ -51,6 +53,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `write_pmtiles()` now rejects GDAL feature-cap rebuilds and size-driven
+  geometry recoding by default, before changing a Path or stream destination.
+  `on_overflow="unsafe"` is the explicit warned opt-out for lossy GDAL output.
 - Removed GDAL as a hard pip dependency, made `write_pmtiles()` importable
   without GDAL, and switched CI test jobs to provision native GDAL separately.
 

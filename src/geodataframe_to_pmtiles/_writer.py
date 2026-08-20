@@ -45,32 +45,19 @@ normaliser converts them before they reach OGR:
 | anything else             | —                  | raises ``UnsupportedPropertyTypeError``  |
 +---------------------------+--------------------+------------------------------------------+
 
-.. rubric:: Per-tile caps (tested POC values)
+.. rubric:: Tile overflow safety
 
-The GDAL PMTiles driver silently drops features when a tile exceeds its
-per-tile ``MAX_FEATURES`` or ``MAX_SIZE`` limit.  ``write_pmtiles`` uses the
-following fixed caps, which were validated by spike testing:
+GDAL's MVT encoder can remove features when ``MAX_FEATURES`` is reached and
+can recode geometries at a lower resolution when ``MAX_SIZE`` is exceeded.
+The writer configures practical limits (300,000 features and 10 MB per tile)
+and captures GDAL's MVT diagnostics while the archive closes.  By default,
+any feature-cap rebuild or size-driven recoding raises
+:class:`~geodataframe_to_pmtiles.TileOverflowError` before the destination is
+changed.
 
-* ``MAX_FEATURES = 300_000`` per tile
-* ``MAX_SIZE = 10_000_000`` bytes (10 MB) per tile
-
-**Spike result:** 200,001 point features at zoom 0 were preserved in full
-and produced a 630,430-byte compressed archive with these caps.
-
-These are **POC values, not universal limits**.  A single dense tile
-(e.g. all features in a 40 km x 40 km area at z8) could still exceed 300 K
-features.  Setting ``MAX_FEATURES=0`` does *not* disable the limit — GDAL
-clamps it to its internal minimum rather than treating 0 as "unlimited".
-
-The GDAL driver provides no post-write signal when a drop occurs.
-
-Use ``on_overflow`` to control the library's response:
-
-* ``"warn"`` (default) - emit a :class:`UserWarning` before writing.
-* ``"ignore"`` - write silently.
-* ``"error"`` - raise :class:`~geodataframe_to_pmtiles.TileOverflowError`
-  *before* writing, with an explanation of the GDAL limitation.  This forces
-  callers to opt in to ``"warn"`` or ``"ignore"`` after reading the warning.
+``on_overflow="unsafe"`` is an explicit opt-out for callers that knowingly
+accept GDAL's lossy behavior. It emits a warning and must not be used for data
+where every feature or coordinate matters.
 
 .. rubric:: Attribution — not supported in this POC
 
@@ -127,7 +114,6 @@ import datetime as _dt
 import json
 import math
 import uuid
-import warnings
 from importlib import import_module
 from io import IOBase
 from pathlib import Path
@@ -138,6 +124,7 @@ import numpy as np
 from geodataframe_to_pmtiles.exceptions import (
     EmptyLayerError,
     MissingCRSError,
+    TileLimitViolation,
     TileOverflowError,
     UnsupportedCRSError,
     UnsupportedPropertyTypeError,
@@ -158,12 +145,11 @@ DEFAULT_MIN_ZOOM: int = 0
 #: Default archive-wide maximum zoom level.
 DEFAULT_MAX_ZOOM: int = 8
 
-# Spike-validated per-tile caps.  200,001 z0 point features were preserved
-# in full at these values (630,430 compressed bytes).  They are NOT unlimited:
-# GDAL clamps MAX_FEATURES=0 to its internal minimum rather than disabling the
-# limit.  Dense tiles may still exceed these caps and produce silent drops.
-_POC_MAX_FEATURES: int = 300_000
-_POC_MAX_SIZE: int = 10_000_000  # bytes per tile (~10 MB)
+# These limits keep common dense datasets practical. They are not a claim of
+# losslessness: _GDALDiagnosticCapture turns every detected limit action into
+# a failure before output is published.
+_MAX_FEATURES: int = 300_000
+_MAX_SIZE: int = 10_000_000
 
 PropertyKind = Literal["string", "int", "float", "bool"]
 
@@ -366,19 +352,99 @@ def _normalise_value(
 # ---------------------------------------------------------------------------
 
 #: Allowed values for the ``on_overflow`` parameter.
-OverflowPolicy = Literal["error", "warn", "ignore"]
+OverflowPolicy = Literal["error", "unsafe"]
 
-_OVERFLOW_WARNING = (
-    "The GDAL PMTiles driver silently drops features when a tile exceeds its "
-    f"per-tile MAX_FEATURES ({_POC_MAX_FEATURES:,}) or MAX_SIZE "
-    f"({_POC_MAX_SIZE // 1_000_000} MB) limit.  These are spike-validated POC "
-    "caps (200,001 z0 features preserved in 630,430 bytes) but are not "
-    "unlimited: a single dense tile could still exceed them.  Setting "
-    "MAX_FEATURES=0 does not disable the limit; GDAL clamps it to its internal "
-    "minimum.  GDAL provides no post-write overflow signal.  Verify the output "
-    "for high-density datasets.  Pass on_overflow='ignore' to suppress this "
-    "warning, or on_overflow='error' to refuse to write instead."
-)
+
+class _GDALDiagnosticCapture:
+    """Collect MVT debug messages emitted while GDAL finalizes an archive."""
+
+    def __init__(self, gdal: Any) -> None:
+        self._gdal = gdal
+        self._events: list[tuple[int, str]] = []
+        self._get_thread_option = getattr(gdal, "GetThreadLocalConfigOption", None)
+        self._set_thread_option = getattr(gdal, "SetThreadLocalConfigOption", None)
+        self._previous_debug: str | None = None
+
+    def __enter__(self) -> _GDALDiagnosticCapture:
+        if callable(self._get_thread_option):
+            self._previous_debug = self._get_thread_option("CPL_DEBUG")
+        if callable(self._set_thread_option):
+            self._set_thread_option("CPL_DEBUG", "MVT")
+        else:
+            self._previous_debug = self._gdal.GetConfigOption("CPL_DEBUG")
+            self._gdal.SetConfigOption("CPL_DEBUG", "MVT")
+        self._gdal.PushErrorHandler(self._record)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._gdal.PopErrorHandler()
+        if callable(self._set_thread_option):
+            self._set_thread_option("CPL_DEBUG", self._previous_debug)
+        else:
+            self._gdal.SetConfigOption("CPL_DEBUG", self._previous_debug)
+
+    def _record(self, _level: int, _number: int, message: str) -> None:
+        self._events.append((_level, message))
+
+    def failures(self) -> tuple[str, ...]:
+        """Return GDAL failures hidden by the temporary diagnostic handler."""
+        return tuple(
+            message for level, message in self._events if level >= self._gdal.CE_Failure
+        )
+
+    def violations(self) -> tuple[TileLimitViolation, ...]:
+        """Translate GDAL's stable MVT diagnostics into public context."""
+        violations: list[TileLimitViolation] = []
+        for _, message in self._events:
+            coordinates = _tile_coordinates(message)
+            if "feature count limit of" in message:
+                limit = _integer_after(message, "feature count limit of ")
+                if limit is not None:
+                    violations.append(
+                        TileLimitViolation(
+                            limit="MAX_FEATURES",
+                            requested=limit,
+                            observed=limit,
+                            tile=coordinates,
+                        )
+                    )
+            elif "Recoding tile " in message and "From " in message:
+                observed = _integer_after(message, "From ")
+                if observed is not None:
+                    violations.append(
+                        TileLimitViolation(
+                            limit="MAX_SIZE",
+                            requested=_MAX_SIZE,
+                            observed=observed,
+                            tile=coordinates,
+                        )
+                    )
+        return tuple(violations)
+
+
+def _integer_after(message: str, prefix: str) -> int | None:
+    """Return the decimal integer immediately following *prefix* in *message*."""
+    start = message.find(prefix)
+    if start == -1:
+        return None
+    parts = message[start + len(prefix) :].lstrip().split()
+    if not parts:
+        return None
+    digits = parts[0].rstrip(".,")
+    return int(digits) if digits.isdecimal() else None
+
+
+def _tile_coordinates(message: str) -> tuple[int, int, int] | None:
+    """Extract ``z/x/y`` from a GDAL MVT diagnostic when it provides one."""
+    marker = "tile "
+    start = message.lower().find(marker)
+    if start == -1:
+        return None
+    raw = message[start + len(marker) :].split(",", 1)[0].split()[0]
+    parts = raw.split("/")
+    if len(parts) != 3 or not all(part.isdecimal() for part in parts):
+        return None
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def write_pmtiles(
@@ -390,7 +456,7 @@ def write_pmtiles(
     name: str = "",
     description: str = "",
     json_fields: Collection[str] | None = None,
-    on_overflow: OverflowPolicy = "warn",
+    on_overflow: OverflowPolicy = "error",
     simplification: float | None = None,
 ) -> None:
     """Write a PMTiles vector archive from one or more GeoDataFrames.
@@ -428,14 +494,11 @@ def write_pmtiles(
         In both cases the encoding is explicit: ``json.dumps`` with
         ``ensure_ascii=False``.  The resulting MVT field type is ``String``.
     on_overflow:
-        Overflow policy for GDAL's per-tile ``MAX_FEATURES`` / ``MAX_SIZE``
-        limits (see module docstring for details).  One of:
-
-        * ``"warn"`` (default) — emit a :class:`UserWarning` before writing.
-        * ``"ignore"`` — write silently.
-        * ``"error"`` — raise :class:`~geodataframe_to_pmtiles.TileOverflowError`
-          before writing; the caller must acknowledge the limitation by
-          switching to ``"warn"`` or ``"ignore"``.
+        Response to GDAL's per-tile ``MAX_FEATURES`` / ``MAX_SIZE`` actions.
+        ``"error"`` (the default) raises
+        :class:`~geodataframe_to_pmtiles.TileOverflowError` before the
+        destination is changed. ``"unsafe"`` writes the archive after a
+        warning, even if GDAL dropped features or reduced geometry precision.
     simplification:
         Optional geometry simplification factor in tile-coordinate units
         (4096 per tile).  ``None`` (default) disables simplification, which
@@ -453,7 +516,8 @@ def write_pmtiles(
         If a column contains a value that cannot be encoded as an MVT property,
         or a list/dict column is not covered by *json_fields*.
     TileOverflowError
-        If ``on_overflow='error'``.  See module docstring for GDAL limitations.
+        If GDAL reports feature dropping or precision reduction and
+        ``on_overflow='error'``.
     ValueError
         If zoom levels are out of range or *min_zoom* > *max_zoom*.
 
@@ -465,9 +529,8 @@ def write_pmtiles(
     bool type.  numpy scalars and ``datetime``/``pd.Timestamp`` objects are
     normalised to Python native types before reaching OGR.
 
-    Per-tile caps are fixed spike-validated POC values:
-    ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``.  They are not
-    unlimited; see the module docstring for details and the tested result.
+    The default writes to GDAL's in-memory filesystem and publishes the result
+    only after its closing diagnostics confirm that neither tile limit acted.
     """
     import geopandas as gpd
 
@@ -516,8 +579,8 @@ def write_pmtiles(
         msg = f"min_zoom ({min_zoom}) must be <= max_zoom ({max_zoom})."
         raise ValueError(msg)
 
-    if on_overflow not in ("error", "warn", "ignore"):
-        msg = f"on_overflow must be 'error', 'warn', or 'ignore', got {on_overflow!r}."
+    if on_overflow not in ("error", "unsafe"):
+        msg = f"on_overflow must be 'error' or 'unsafe', got {on_overflow!r}."
         raise ValueError(msg)
 
     # Normalise json_fields to frozenset or None for O(1) membership tests.
@@ -533,26 +596,6 @@ def write_pmtiles(
         for col in (c for c in gdf.columns if c != gdf.geometry.name):
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
         field_kinds_by_layer[layer_name] = field_kinds
-
-    # ------------------------------------------------------------------
-    # Overflow policy
-    # ------------------------------------------------------------------
-    if on_overflow == "error":
-        msg = (
-            f"on_overflow='error': refusing to write because tile-level "
-            f"data loss cannot be ruled out.  The GDAL PMTiles driver "
-            f"silently drops features when a tile exceeds its fixed per-tile "
-            f"caps (MAX_FEATURES={_POC_MAX_FEATURES:,}, "
-            f"MAX_SIZE={_POC_MAX_SIZE // 1_000_000} MB), and provides no "
-            f"post-write signal when a drop occurs.  Setting MAX_FEATURES=0 "
-            f"does not disable the limit.  "
-            f"Pass on_overflow='warn' or on_overflow='ignore' to proceed "
-            f"after acknowledging this limitation."
-        )
-        raise TileOverflowError(msg)
-
-    if on_overflow == "warn":
-        warnings.warn(_OVERFLOW_WARNING, UserWarning, stacklevel=2)
 
     # Import GDAL only after the pure-Python validation has succeeded.
     gdal, ogr, osr = _load_gdal_modules()
@@ -573,44 +616,58 @@ def write_pmtiles(
     ds_options: list[str] = [
         f"MINZOOM={min_zoom}",
         f"MAXZOOM={max_zoom}",
-        f"MAX_SIZE={_POC_MAX_SIZE}",
-        f"MAX_FEATURES={_POC_MAX_FEATURES}",
+        f"MAX_SIZE={_MAX_SIZE}",
+        f"MAX_FEATURES={_MAX_FEATURES}",
     ]
     if name:
         ds_options.append(f"NAME={name}")
     if description:
         ds_options.append(f"DESCRIPTION={description}")
 
-    ds = drv.CreateDataSource(vsimem_path, options=ds_options)
-    if ds is None:
-        msg = f"GDAL could not create a PMTiles datasource at {vsimem_path!r}."
-        raise RuntimeError(msg)
-
     try:
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(4326)
+        with _GDALDiagnosticCapture(gdal) as diagnostics:
+            ds = drv.CreateDataSource(vsimem_path, options=ds_options)
+            if ds is None:
+                msg = f"GDAL could not create a PMTiles datasource at {vsimem_path!r}."
+                raise RuntimeError(msg)
 
-        for layer_name, gdf in layers.items():
-            _write_layer(
-                ds,
-                layer_name,
-                gdf,
-                srs,
-                simplification,
-                json_field_names,
-                ogr,
-                field_kinds_by_layer[layer_name],
+            try:
+                srs = osr.SpatialReference()
+                srs.ImportFromEPSG(4326)
+
+                for layer_name, gdf in layers.items():
+                    _write_layer(
+                        ds,
+                        layer_name,
+                        gdf,
+                        srs,
+                        simplification,
+                        json_field_names,
+                        ogr,
+                        field_kinds_by_layer[layer_name],
+                    )
+
+                ds.FlushCache()
+            finally:
+                ds = None  # Closing emits the MVT limit diagnostics.
+
+        violations = diagnostics.violations()
+        failures = diagnostics.failures()
+        if failures:
+            msg = f"GDAL failed to write the PMTiles archive: {failures[-1]}"
+            raise RuntimeError(msg)
+        if violations and on_overflow == "error":
+            raise TileOverflowError(violations)
+        if violations:
+            import warnings
+
+            warnings.warn(
+                "on_overflow='unsafe' allowed GDAL to exceed a tile limit; "
+                "features may be missing or geometry precision may be reduced.",
+                UserWarning,
+                stacklevel=2,
             )
 
-        # Flush to vsimem before reading back.
-        ds.FlushCache()
-    finally:
-        ds = None  # Close/release the datasource
-
-    # ------------------------------------------------------------------
-    # Read the bytes from /vsimem/ and write to the caller's output.
-    # ------------------------------------------------------------------
-    try:
         data = _read_vsimem(vsimem_path, gdal)
     finally:
         gdal.Unlink(vsimem_path)

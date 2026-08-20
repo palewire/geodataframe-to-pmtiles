@@ -6,7 +6,6 @@ import importlib
 import importlib.util
 import io
 import json
-import warnings
 from pathlib import Path
 
 import geopandas as gpd
@@ -23,6 +22,8 @@ from geodataframe_to_pmtiles import (
     UnsupportedPropertyTypeError,
     write_pmtiles,
 )
+
+from .pmtiles_semantics import read_pmtiles_archive
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,8 +70,8 @@ def _open_pmtiles_bytes(data: bytes) -> tuple[gdal.Dataset, str]:  # noqa: F821
 
 
 def _write_ignore(layers, output, **kwargs):
-    """Call write_pmtiles with on_overflow='ignore' to suppress the default warning."""
-    write_pmtiles(layers, output, on_overflow="ignore", **kwargs)
+    """Write an archive through the default safe overflow policy."""
+    write_pmtiles(layers, output, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -448,7 +449,7 @@ def test_list_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 @pytest.mark.unit
@@ -460,46 +461,90 @@ def test_dict_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 # ---------------------------------------------------------------------------
-# on_overflow policy
+# Overflow policy
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_on_overflow_error_raises_before_write() -> None:
-    """on_overflow='error' raises TileOverflowError before any data is written."""
-    buf = io.BytesIO()
-    with pytest.raises(TileOverflowError, match="on_overflow"):
-        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="error")
-    # Nothing should have been written.
-    assert buf.tell() == 0
+@pytest.mark.integration
+def test_feature_overflow_raises_before_path_is_overwritten(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A feature cap diagnostic rejects the archive and preserves the destination."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+    clustered = gpd.GeoDataFrame(
+        {"id": [1, 2, 3]},
+        geometry=[Point(0.0, 0.0), Point(0.0, 0.0), Point(0.0, 0.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "existing.pmtiles"
+    out.write_bytes(b"keep this archive")
+
+    with pytest.raises(TileOverflowError) as caught:
+        write_pmtiles({"clustered": clustered}, out, min_zoom=0, max_zoom=0)
+
+    violation = caught.value.violations[0]
+    assert violation.limit == "MAX_FEATURES"
+    assert violation.requested == 2
+    assert violation.observed >= 2
+    assert violation.tile == (0, 0, 0)
+    assert out.read_bytes() == b"keep this archive"
 
 
-@pytest.mark.unit
-def test_on_overflow_warn_emits_warning() -> None:
-    """on_overflow='warn' (default) emits a UserWarning mentioning the caps."""
-    buf = io.BytesIO()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        write_pmtiles({"lyr": _points_gdf()}, buf)
-    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-    assert len(overflow_warnings) >= 1
-    msg = str(overflow_warnings[0].message).lower()
-    assert "overflow" in msg or "max_features" in msg or "300" in msg
+@pytest.mark.integration
+def test_size_overflow_raises_before_stream_is_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A size-driven geometry recode rejects the archive and preserves a stream."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_SIZE", 100)
+    coordinates = [
+        (float(index % 360) - 180.0, float((index * 17) % 170) - 85.0)
+        for index in range(4_000)
+    ]
+    gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[LineString(coordinates)],
+        crs="EPSG:4326",
+    )
+    stream = io.BytesIO(b"keep this archive")
+    stream.seek(0)
+
+    with pytest.raises(TileOverflowError) as caught:
+        write_pmtiles({"dense": gdf}, stream, min_zoom=0, max_zoom=0)
+
+    violation = caught.value.violations[0]
+    assert violation.limit == "MAX_SIZE"
+    assert violation.requested == 100
+    assert violation.observed > violation.requested
+    assert violation.tile == (0, 0, 0)
+    assert stream.getvalue() == b"keep this archive"
 
 
-@pytest.mark.unit
-def test_on_overflow_ignore_no_warning() -> None:
-    """on_overflow='ignore' suppresses the overflow warning."""
-    buf = io.BytesIO()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="ignore")
-    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-    assert len(overflow_warnings) == 0
+@pytest.mark.integration
+def test_unsafe_overflow_opt_out_warns_and_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explicit unsafe mode is the only mode that permits an overflow."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+    buffer = io.BytesIO()
+    with pytest.warns(UserWarning, match="unsafe"):
+        write_pmtiles(
+            {"lyr": _points_gdf()},
+            buffer,
+            min_zoom=0,
+            max_zoom=0,
+            on_overflow="unsafe",
+        )
+    assert buffer.getvalue()
 
 
 @pytest.mark.unit
@@ -528,7 +573,7 @@ def test_missing_gdal_runtime_raises_runtime_error(
     monkeypatch.setattr(writer_module, "import_module", _missing_osgeo)
 
     with pytest.raises(RuntimeError, match="GDAL Python bindings are required"):
-        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="ignore")
+        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="unsafe")
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +615,8 @@ def test_poc_caps_preserve_200k_z0_features(tmp_path: Path) -> None:
     )
     out = tmp_path / "large_z0.pmtiles"
     _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out)
+    assert len(layers["lyr"]["features"]) == n
     assert out.exists()
     size = out.stat().st_size
     # Spike result: 630,430 bytes.  Allow ±50 % for driver/compression variance.
@@ -644,7 +691,6 @@ def test_attribution_parameter_not_accepted() -> None:
             {"lyr": _points_gdf()},
             io.BytesIO(),
             attribution="© test",  # type: ignore[call-overload]
-            on_overflow="ignore",
         )
 
 
@@ -823,7 +869,7 @@ def test_unsupported_property_type_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
 
 
 @pytest.mark.unit

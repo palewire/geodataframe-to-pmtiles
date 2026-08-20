@@ -42,7 +42,6 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and lines layer",
-    on_overflow="warn",  # default: warn about GDAL tile-level drop risk
 )
 ```
 
@@ -52,7 +51,7 @@ Write to a `BytesIO` stream (useful in web servers or pipelines):
 import io
 
 buf = io.BytesIO()
-write_pmtiles({"points": points}, buf, on_overflow="ignore")
+write_pmtiles({"points": points}, buf)
 buf.seek(0)
 # buf.read() contains the raw PMTiles bytes
 ```
@@ -115,18 +114,29 @@ GDAL's internal list-to-string conversion from leaking through.
 
 ### Overflow policy
 
-The GDAL PMTiles driver silently drops features when a tile exceeds its fixed
-per-tile caps: **`MAX_FEATURES = 300,000`** and **`MAX_SIZE = 10 MB`**.
-These are spike-validated POC values — 200,001 z0 features were preserved
-in full (630,430 compressed bytes) — but they are **not unlimited**.  Setting
-`MAX_FEATURES=0` does not disable the limit; GDAL clamps it to its internal
-minimum.  Dense spatial clustering can produce tiles that exceed these caps,
-and GDAL provides no post-write overflow signal.
+GDAL's MVT encoder can drop features after `MAX_FEATURES` is reached and
+reduce geometry precision after `MAX_SIZE` is exceeded. The writer uses
+practical limits (300,000 features and 10 MB per tile) and captures the
+encoder's diagnostics during finalization. With the default
+`on_overflow="error"`, a reported feature-cap rebuild or size-driven recode
+raises :class:`~geodataframe_to_pmtiles.TileOverflowError` before the Path or
+stream is changed. The exception lists the limit, configured value, observed
+value, and tile coordinate when GDAL reports one.
 
-* `on_overflow="error"` — raises :class:`~geodataframe_to_pmtiles.TileOverflowError`
-  before any data is written; the caller must opt in to `"warn"` or `"ignore"`.
-* `on_overflow="warn"` (default) — emits a `UserWarning`.
-* `on_overflow="ignore"` — writes silently.
+The 200,001-feature z0 spike remains supported and is independently decoded
+in the test suite. This is not a capacity promise: clustered features or dense
+geometry can still exceed a tile limit, but the default API cannot publish
+that archive after GDAL reports the action.
+
+`on_overflow="unsafe"` is an explicit opt-out. It emits a warning and may
+publish an archive with missing features or lower-precision geometry.
+
+### Climate-monitor guidance
+
+Keep the default policy for climate cell layers. If it raises
+`TileOverflowError`, split the layer or lower its density at the affected zoom;
+do not use `on_overflow="unsafe"` where holes or coordinate changes would
+alter reported conditions.
 
 ### Known limitations
 
