@@ -64,7 +64,7 @@ Write to a `BytesIO` stream instead of a file:
 import io
 
 buf = io.BytesIO()
-write({"points": points}, buf)
+gpm.write({"points": points}, buf)
 ```
 
 Write a single GeoDataFrame with an explicit layer name:
