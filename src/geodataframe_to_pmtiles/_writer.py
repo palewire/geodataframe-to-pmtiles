@@ -714,8 +714,29 @@ def _write_layer(
     ogr: Any,
     field_kinds: dict[str, PropertyKind],
 ) -> None:
-    """Create an OGR layer inside *ds* and populate it from *gdf*."""
-    import pandas as pd
+    """Create an OGR layer inside *ds* and populate it from *gdf*.
+
+    Performance notes
+    -----------------
+    Geometries are batch-converted to WKB via :func:`shapely.to_wkb` before
+    the feature loop.  This avoids a per-row Python-level text roundtrip
+    (``geom.wkt`` string serialisation followed by ``CreateGeometryFromWkt``
+    parsing).  The valid-geometry mask (empty / missing filter) is also
+    computed in a single vectorised call before the loop, removing per-row
+    ``is_empty`` attribute access.
+
+    Property columns are pre-normalised to Python-native lists before the
+    feature loop.  For ``int``, ``float``, and ``bool`` kinds,
+    ``Series.tolist()`` converts numpy scalars to Python scalars in one
+    batch operation, and ``Series.isna().tolist()`` produces the null mask
+    without per-row :func:`~pandas.isna` overhead.  The ``bool`` kind is
+    further converted to 0 / 1 :class:`int` values, matching the MVT
+    encoding rule documented in the module docstring.  For ``string``-kind
+    columns a fast path handles the common all-strings case; only columns
+    that contain non-string values (``datetime``, ``list``, ``dict``) invoke
+    the full per-row normaliser for those cells.
+    """
+    import shapely
 
     # Determine OGR geometry type from the GeoDataFrame.
     geom_type = _shapely_geom_type_to_ogr(gdf, ogr)
@@ -733,43 +754,97 @@ def _write_layer(
 
     # Discover non-geometry columns and their OGR types.
     property_cols = [c for c in gdf.columns if c != gdf.geometry.name]
-    ogr_field_types = _ogr_field_types(ogr)
-    field_types: dict[str, int] = {
-        col: ogr_field_types[field_kinds[col]] for col in property_cols
-    }
+    ogr_field_type_map = _ogr_field_types(ogr)
     for col in property_cols:
-        field_defn = ogr.FieldDefn(col, field_types[col])
+        field_defn = ogr.FieldDefn(col, ogr_field_type_map[field_kinds[col]])
         if field_kinds[col] == "bool":
             field_defn.SetSubType(ogr.OFSTBoolean)
         lyr.CreateField(field_defn)
 
     layer_defn = lyr.GetLayerDefn()
-    geom_col = str(gdf.geometry.name)
 
-    # Write features in input order (deterministic).
-    for row in gdf.itertuples(index=False):
-        geom = getattr(row, geom_col)
-        if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
-            continue  # Skip null / empty geometries
+    # ------------------------------------------------------------------
+    # Batch-compute valid geometry mask and WKB bytes.
+    # Vectorised shapely calls replace per-row geom.wkt + WKT parsing.
+    # ------------------------------------------------------------------
+    geom_arr = gdf.geometry.values  # geopandas GeometryArray (shapely-backed)
+    skip_mask = shapely.is_missing(geom_arr) | shapely.is_empty(geom_arr)
+    valid_idx = np.where(~skip_mask)[0]
+    # to_wkb on a filtered numpy array → ndarray of bytes objects
+    wkb_arr: Any = shapely.to_wkb(geom_arr[valid_idx])
 
-        feat = ogr.Feature(layer_defn)
-        ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
+    # ------------------------------------------------------------------
+    # Pre-normalise property columns.
+    # For numeric/bool kinds, Series.tolist() converts numpy scalars to
+    # Python scalars in one call; isna().tolist() builds the null mask.
+    # For string-kind columns we pre-build the raw list and fall back to
+    # per-cell normalisation only for non-str values (datetime, JSON…).
+    # ------------------------------------------------------------------
+    col_nulls: dict[str, list[bool]] = {}
+    col_vals: dict[str, list[Any]] = {}
+    for col in property_cols:
+        series = gdf[col]
+        null_flags: list[bool] = series.isna().tolist()
+        col_nulls[col] = null_flags
+        kind = field_kinds[col]
+        if kind == "bool":
+            # Pre-convert to 0/1 int; nulls get a placeholder (never used).
+            raw = series.tolist()
+            col_vals[col] = [
+                0 if null_flags[i] else int(bool(raw[i])) for i in range(len(raw))
+            ]
+        elif kind in ("int", "float"):
+            col_vals[col] = series.tolist()  # numpy scalars → Python scalars
+        else:  # "string" kind: str, datetime, list/dict, or None/NA
+            col_vals[col] = series.tolist()
+
+    # ------------------------------------------------------------------
+    # Feature loop — uses pre-computed WKB and pre-normalised columns.
+    # ------------------------------------------------------------------
+    for local_i, row_i_raw in enumerate(valid_idx):
+        row_i: int = int(row_i_raw)
+        ogr_geom = ogr.CreateGeometryFromWkb(bytes(wkb_arr[local_i]))
         if ogr_geom is None:
             continue
+
+        feat = ogr.Feature(layer_defn)
         feat.SetGeometry(ogr_geom)
 
         for col in property_cols:
-            val = getattr(row, col)
-            is_null, normalised = _normalise_value(val, col, json_field_names)
-            if is_null or normalised is None:
+            if col_nulls[col][row_i]:
                 feat.SetFieldNull(col)
+                continue
+
+            val = col_vals[col][row_i]
+            kind = field_kinds[col]
+            if kind in ("bool", "int", "float"):
+                # Already Python-native scalar; set directly.
+                feat.SetField(col, val)
             else:
-                feat.SetField(col, normalised)
+                # "string" kind: fast path for the common all-str case;
+                # fall back to per-cell normalisation for other types.
+                if isinstance(val, str):
+                    feat.SetField(col, val)
+                elif isinstance(val, (list, dict)):
+                    feat.SetField(col, json.dumps(val, ensure_ascii=False))
+                elif isinstance(val, (_dt.date, _dt.datetime)):
+                    feat.SetField(col, val.isoformat())
+                elif isinstance(val, (int, float, np.integer, np.floating)):
+                    # Mixed column (e.g. scalars alongside list/dict values):
+                    # OFTString field; pass the scalar and let OGR convert.
+                    feat.SetField(
+                        col,
+                        int(val) if isinstance(val, (int, np.integer)) else float(val),
+                    )
+                else:
+                    iso = getattr(type(val), "isoformat", None)
+                    if callable(iso):
+                        feat.SetField(col, iso(val))
+                    else:
+                        feat.SetFieldNull(col)
 
         lyr.CreateFeature(feat)
         feat = None  # Release
-
-    _ = pd  # suppress unused-import; pd.isna is used in helpers
 
 
 def _shapely_geom_type_to_ogr(gdf: Any, ogr: Any) -> int:

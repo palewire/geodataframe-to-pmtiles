@@ -10,6 +10,7 @@ dependencies = [
     "geopandas>=1.0",
     "numpy>=1.24",
     "pandas>=2.0",
+    "shapely>=2.0",
 ]
 authors = [{ name = "palewire", email = "palewire@users.noreply.github.com" }]
 description = "Write PMTiles vector archives from one or more GeoPandas GeoDataFrames using GDAL"
@@ -214,4 +215,6 @@ unused-ignore-comment = "error"
 
 [tool.deptry]
 # Ignore self-imports (DEP003) for the package itself.
+# Benchmarks use optional utilities (shapely, pmtiles) that are test/dev deps.
 per_rule_ignores = {"DEP003" = ["geodataframe_to_pmtiles"]}
+exclude = ["benchmarks"]
