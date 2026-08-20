@@ -891,11 +891,11 @@ def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
     """write_pmtiles stores attribution in metadata when output is a Path."""
     out = tmp_path / "attr.pmtiles"
     _write_ignore(
-        {"pts": _points_gdf()}, out, attribution="© OpenStreetMap contributors"
+        {"pts": _points_gdf()}, out, attribution="Reuters, ECMWF"
     )
 
     meta = _read_pmtiles_metadata(out.read_bytes())
-    assert meta.get("attribution") == "© OpenStreetMap contributors"
+    assert meta.get("attribution") == "Reuters, ECMWF"
 
 
 @pytest.mark.integration
@@ -903,12 +903,12 @@ def test_attribution_stored_in_metadata_bytesio() -> None:
     """write_pmtiles stores attribution in metadata when output is a BytesIO."""
     buf = io.BytesIO()
     _write_ignore(
-        {"pts": _points_gdf()}, buf, attribution="© OpenStreetMap contributors"
+        {"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF"
     )
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
-    assert meta.get("attribution") == "© OpenStreetMap contributors"
+    assert meta.get("attribution") == "Reuters, ECMWF"
 
 
 @pytest.mark.integration
@@ -1025,14 +1025,14 @@ def test_attribution_era5_fixture(tmp_path: Path) -> None:
         out,
         min_zoom=0,
         max_zoom=0,
-        attribution="ERA5 data provided by ECMWF — © Copernicus Climate Service",
+        attribution="Reuters, ECMWF",
         on_overflow="ignore",
     )
 
     meta = _read_pmtiles_metadata(out.read_bytes())
     assert (
         meta.get("attribution")
-        == "ERA5 data provided by ECMWF — © Copernicus Climate Service"
+        == "Reuters, ECMWF"
     )
     # Tiles must still be present.
     from pmtiles.reader import MemorySource, all_tiles
