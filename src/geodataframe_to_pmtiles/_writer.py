@@ -123,6 +123,7 @@ order for commonly shaped geometries.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import json
 import math
@@ -321,6 +322,39 @@ def _normalise_value(
 #: Allowed values for the ``on_overflow`` parameter.
 OverflowPolicy = Literal["error", "warn", "ignore"]
 
+#: Allowed values for the ``empty_layer_policy`` parameter.
+EmptyLayerPolicy = Literal["error", "skip"]
+
+
+@dataclasses.dataclass(frozen=True)
+class WriteResult:
+    """Return value of :func:`write_pmtiles`.
+
+    In the common case (all layers non-empty, ``empty_layer_policy='error'``)
+    ``skipped_layers`` is always an empty frozenset.  It is non-empty only
+    when ``empty_layer_policy='skip'`` and at least one named layer contained
+    no features.
+
+    Attributes
+    ----------
+    skipped_layers:
+        Frozenset of layer names that were omitted from the archive because
+        they contained zero features.  Empty when no layers were skipped.
+
+    Examples
+    --------
+    >>> result = write_pmtiles(
+    ...     {"data": gdf, "empty": empty_gdf}, out, empty_layer_policy="skip"
+    ... )
+    >>> result.skipped_layers
+    frozenset({'empty'})
+    >>> if result.skipped_layers:
+    ...     print("Skipped:", sorted(result.skipped_layers))
+    """
+
+    skipped_layers: frozenset[str] = dataclasses.field(default_factory=frozenset)
+
+
 _OVERFLOW_WARNING = (
     "The GDAL PMTiles driver silently drops features when a tile exceeds its "
     f"per-tile MAX_FEATURES ({_POC_MAX_FEATURES:,}) or MAX_SIZE "
@@ -344,8 +378,9 @@ def write_pmtiles(
     description: str = "",
     json_fields: Collection[str] | None = None,
     on_overflow: OverflowPolicy = "warn",
+    empty_layer_policy: EmptyLayerPolicy = "error",
     simplification: float | None = None,
-) -> None:
+) -> WriteResult:
     """Write a PMTiles vector archive from one or more GeoDataFrames.
 
     Parameters
@@ -353,7 +388,7 @@ def write_pmtiles(
     layers:
         Mapping of layer name → GeoDataFrame.  Every GeoDataFrame must have
         CRS EPSG:4326 (geographic, longitude/latitude).  The mapping must not
-        be empty, and no GeoDataFrame may be empty.
+        be empty.
     output:
         Destination for the archive.  Either a :class:`pathlib.Path` (the
         file is created or overwritten) or any binary-writable stream such as
@@ -389,15 +424,37 @@ def write_pmtiles(
         * ``"error"`` — raise :class:`~geodataframe_to_pmtiles.TileOverflowError`
           before writing; the caller must acknowledge the limitation by
           switching to ``"warn"`` or ``"ignore"``.
+    empty_layer_policy:
+        How to handle GeoDataFrames that contain no features.  One of:
+
+        * ``"error"`` (default) — raise
+          :class:`~geodataframe_to_pmtiles.EmptyLayerError` immediately.
+          Use this to enforce that all named layers must have data.
+        * ``"skip"`` — omit empty layers from the archive, emit a
+          :class:`UserWarning` naming each omitted layer, and record the
+          omitted names in :attr:`WriteResult.skipped_layers`.  The climate-
+          monitor pattern is to build a full layer dict and call
+          ``write_pmtiles(..., empty_layer_policy='skip')`` rather than pre-
+          filtering optional layers manually.  If *all* layers are empty the
+          function still raises :class:`~geodataframe_to_pmtiles.EmptyLayerError`
+          because an archive with zero layers is unusable.
     simplification:
         Optional geometry simplification factor in tile-coordinate units
         (4096 per tile).  ``None`` (default) disables simplification, which
         is recommended for a proof-of-concept to avoid unexpected data loss.
 
+    Returns
+    -------
+    WriteResult
+        A frozen dataclass.  ``result.skipped_layers`` is a frozenset of
+        layer names omitted from the archive.  It is always empty when
+        ``empty_layer_policy='error'`` (the default).
+
     Raises
     ------
     EmptyLayerError
-        If *layers* is empty or any GeoDataFrame has zero features.
+        If *layers* is empty, or all layers are empty (regardless of policy),
+        or any layer is empty and ``empty_layer_policy='error'``.
     MissingCRSError
         If any GeoDataFrame has no CRS set.
     UnsupportedCRSError
@@ -431,16 +488,59 @@ def write_pmtiles(
         msg = "The 'layers' mapping must contain at least one entry."
         raise EmptyLayerError(msg)
 
+    if empty_layer_policy not in ("error", "skip"):
+        msg = (
+            f"empty_layer_policy must be 'error' or 'skip', got {empty_layer_policy!r}."
+        )
+        raise ValueError(msg)
+
+    # Separate layers by emptiness up-front so all further code only sees
+    # non-empty layers.
+    skipped: list[str] = []
+    active: dict[str, gpd.GeoDataFrame] = {}
     for layer_name, gdf in layers.items():
         if not isinstance(gdf, gpd.GeoDataFrame):
             msg = f"Layer '{layer_name}' is not a GeoDataFrame."
             raise TypeError(msg)
         if gdf.empty:
-            msg = (
-                f"Layer '{layer_name}' contains no features.  "
-                "Empty layers are not permitted; omit the layer or supply data."
-            )
-            raise EmptyLayerError(msg)
+            if empty_layer_policy == "error":
+                msg = (
+                    f"Layer '{layer_name}' contains no features.  "
+                    "Empty layers are not permitted when "
+                    "empty_layer_policy='error' (the default).  "
+                    "Either supply data for this layer, omit it from the "
+                    "mapping, or pass empty_layer_policy='skip' to let "
+                    "write_pmtiles omit it automatically."
+                )
+                raise EmptyLayerError(msg)
+            skipped.append(layer_name)
+        else:
+            active[layer_name] = gdf
+
+    # If every layer was empty (and the policy allowed individual empties),
+    # we still can't write a zero-layer archive — it's unusable.
+    if not active:
+        msg = (
+            f"All {len(layers)} layer(s) are empty "
+            f"({sorted(layers)!r}).  "
+            "An archive with zero non-empty layers cannot be written.  "
+            "Supply at least one layer with features."
+        )
+        raise EmptyLayerError(msg)
+
+    # Warn explicitly about skipped layers so the caller is never surprised.
+    if skipped:
+        warnings.warn(
+            f"The following layer(s) were empty and omitted from the archive: "
+            f"{sorted(skipped)!r}.  "
+            f"The archive will contain only: {sorted(active)!r}.  "
+            "Check WriteResult.skipped_layers to inspect this programmatically.  "
+            "Pass empty_layer_policy='error' to raise instead of skipping.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    for layer_name, gdf in active.items():
         if gdf.crs is None:
             msg = (
                 f"Layer '{layer_name}' has no CRS.  "
@@ -481,7 +581,7 @@ def write_pmtiles(
     # Validate all column types up-front before any GDAL objects are created.
     # This prevents a partially-initialised dataset from being written.
     field_kinds_by_layer: dict[str, dict[str, PropertyKind]] = {}
-    for layer_name, gdf in layers.items():
+    for layer_name, gdf in active.items():
         field_kinds: dict[str, PropertyKind] = {}
         for col in (c for c in gdf.columns if c != gdf.geometry.name):
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
@@ -543,7 +643,7 @@ def write_pmtiles(
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(4326)
 
-        for layer_name, gdf in layers.items():
+        for layer_name, gdf in active.items():
             _write_layer(
                 ds,
                 layer_name,
@@ -578,6 +678,8 @@ def write_pmtiles(
             f"got {type(output).__name__!r}."
         )
         raise TypeError(msg)
+
+    return WriteResult(skipped_layers=frozenset(skipped))
 
 
 # ---------------------------------------------------------------------------

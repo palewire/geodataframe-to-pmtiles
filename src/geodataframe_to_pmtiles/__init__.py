@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from geodataframe_to_pmtiles._writer import write_pmtiles
+from geodataframe_to_pmtiles._writer import WriteResult, write_pmtiles
 from geodataframe_to_pmtiles.exceptions import (
     EmptyLayerError,
     MissingCRSError,
@@ -19,5 +19,6 @@ __all__ = [
     "UnsupportedCRSError",
     "UnsupportedPropertyTypeError",
     "WritePMTilesError",
+    "WriteResult",
     "write_pmtiles",
 ]

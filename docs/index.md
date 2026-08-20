@@ -104,6 +104,41 @@ Any `list`- or `dict`-valued column not covered by `json_fields` raises
 :class:`~geodataframe_to_pmtiles.UnsupportedPropertyTypeError`.  This prevents
 GDAL's internal list-to-string conversion from leaking through.
 
+### empty_layer_policy: explicit empty-layer handling
+
+By default (`empty_layer_policy="error"`), any layer with zero features raises
+:class:`~geodataframe_to_pmtiles.EmptyLayerError` immediately.  This is the
+safe default for callers who control the input.
+
+For the climate-monitor pattern — where a dict of optional layers is assembled
+and some may be empty depending on the run — use `empty_layer_policy="skip"`:
+
+```python
+result = write_pmtiles(
+    {
+        "fire_perimeters": fire_gdf,  # may be empty in off-season
+        "flood_zones": flood_gdf,  # always has data
+    },
+    output,
+    empty_layer_policy="skip",
+    on_overflow="warn",
+)
+if result.skipped_layers:
+    logger.warning("Omitted empty layers: %s", sorted(result.skipped_layers))
+```
+
+`skip` mode:
+
+* Omits empty layers from the archive **without raising**.
+* Emits a `UserWarning` naming each omitted layer so the omission is never silent.
+* Returns their names in :attr:`~geodataframe_to_pmtiles.WriteResult.skipped_layers`.
+* Still raises :class:`~geodataframe_to_pmtiles.EmptyLayerError` if *all* layers
+  are empty, because an archive with zero layers is unusable.
+
+Do not pre-filter optional layers before calling `write_pmtiles`; use
+`empty_layer_policy="skip"` instead so the caller always knows which layers
+were written and which were omitted.
+
 ### Overflow policy
 
 The GDAL PMTiles driver silently drops features when a tile exceeds its fixed

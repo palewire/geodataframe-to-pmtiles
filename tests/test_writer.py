@@ -21,6 +21,7 @@ from geodataframe_to_pmtiles import (
     TileOverflowError,
     UnsupportedCRSError,
     UnsupportedPropertyTypeError,
+    WriteResult,
     write_pmtiles,
 )
 
@@ -745,22 +746,131 @@ def test_simplification_option(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# empty_layer_policy and WriteResult
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_write_result_default_no_skipped() -> None:
+    """write_pmtiles returns WriteResult with empty skipped_layers when no empty layers."""
+    buf = io.BytesIO()
+    result = write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="ignore")
+    assert isinstance(result, WriteResult)
+    assert result.skipped_layers == frozenset()
+
+
+@pytest.mark.unit
+def test_empty_layer_policy_error_is_default() -> None:
+    """empty_layer_policy='error' (default) raises EmptyLayerError for empty layers."""
+    empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
+    with pytest.raises(EmptyLayerError, match="empty_layer_policy='error'"):
+        write_pmtiles({"empty": empty}, io.BytesIO())
+
+
+@pytest.mark.integration
+def test_empty_layer_policy_skip_omits_empty_and_writes_rest(tmp_path: Path) -> None:
+    """skip policy omits the empty layer and writes the non-empty ones."""
+    from osgeo import gdal
+
+    empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
+    out = tmp_path / "skip.pmtiles"
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = write_pmtiles(
+            {"data": _points_gdf(), "optional": empty},
+            out,
+            on_overflow="ignore",
+            empty_layer_policy="skip",
+        )
+
+    assert result.skipped_layers == frozenset({"optional"})
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    layer_names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "data" in layer_names
+    assert "optional" not in layer_names
+    ds = None
+
+
+@pytest.mark.unit
+def test_empty_layer_policy_skip_emits_warning() -> None:
+    """skip policy emits a UserWarning naming the skipped layer(s)."""
+    empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
+    buf = io.BytesIO()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write_pmtiles(
+            {"data": _points_gdf(), "optional": empty},
+            buf,
+            on_overflow="ignore",
+            empty_layer_policy="skip",
+        )
+    skip_warnings = [
+        w
+        for w in caught
+        if issubclass(w.category, UserWarning) and "optional" in str(w.message)
+    ]
+    assert len(skip_warnings) >= 1
+    assert "optional" in str(skip_warnings[0].message)
+    assert "skipped_layers" in str(skip_warnings[0].message)
+
+
+@pytest.mark.unit
+def test_empty_layer_policy_skip_returns_all_skipped_names() -> None:
+    """skip policy reports all empty layer names in skipped_layers."""
+    empty1 = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
+    empty2 = gpd.GeoDataFrame({"b": []}, geometry=[], crs="EPSG:4326")
+    buf = io.BytesIO()
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = write_pmtiles(
+            {"data": _points_gdf(), "opt_a": empty1, "opt_b": empty2},
+            buf,
+            on_overflow="ignore",
+            empty_layer_policy="skip",
+        )
+    assert result.skipped_layers == frozenset({"opt_a", "opt_b"})
+
+
+@pytest.mark.unit
+def test_empty_layer_policy_skip_all_empty_raises() -> None:
+    """skip policy raises EmptyLayerError when every layer is empty (unusable archive)."""
+    empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
+    layers = {"opt_a": empty, "opt_b": empty}
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        with pytest.raises(EmptyLayerError, match="All"):
+            write_pmtiles(layers, io.BytesIO(), empty_layer_policy="skip")
+
+
+@pytest.mark.unit
+def test_empty_layer_policy_invalid_value_raises() -> None:
+    """An invalid empty_layer_policy value raises ValueError."""
+    with pytest.raises(ValueError, match="empty_layer_policy"):
+        write_pmtiles(
+            {"lyr": _points_gdf()},
+            io.BytesIO(),
+            empty_layer_policy="warn",  # type: ignore[arg-type]
+        )
+
+
+# ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_empty_layers_dict_raises() -> None:
-    """An empty layers mapping raises EmptyLayerError."""
+    """An empty layers mapping raises EmptyLayerError regardless of policy."""
     with pytest.raises(EmptyLayerError):
         write_pmtiles({}, io.BytesIO())
 
 
 @pytest.mark.unit
-def test_empty_geodataframe_raises() -> None:
-    """A layer with zero features raises EmptyLayerError."""
+def test_empty_geodataframe_raises_with_default_policy() -> None:
+    """A layer with zero features raises EmptyLayerError under the default policy."""
     empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
-    with pytest.raises(EmptyLayerError):
+    with pytest.raises(EmptyLayerError, match="empty_layer_policy='error'"):
         write_pmtiles({"empty": empty}, io.BytesIO())
 
 

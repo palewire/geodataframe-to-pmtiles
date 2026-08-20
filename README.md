@@ -52,7 +52,7 @@ write_pmtiles({"points": points}, buf, on_overflow="ignore")
 See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
 the full API reference.
 
-### `write_pmtiles(layers, output, *, min_zoom, max_zoom, name, description, json_fields, on_overflow, simplification)`
+### `write_pmtiles(layers, output, *, min_zoom, max_zoom, name, description, json_fields, on_overflow, empty_layer_policy, simplification) → WriteResult`
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -64,7 +64,14 @@ the full API reference.
 | `description` | `str` | `""` | Human-readable description in archive metadata. |
 | `json_fields` | `Collection[str] \| None` | `None` | Columns to JSON-encode (list/dict values). `None` auto-encodes all; explicit set restricts to named columns only. |
 | `on_overflow` | `"error" \| "warn" \| "ignore"` | `"warn"` | Policy for GDAL tile-level drop risk. See overflow notes below. |
+| `empty_layer_policy` | `"error" \| "skip"` | `"error"` | How to handle GeoDataFrames with zero features. `"error"` raises immediately. `"skip"` omits empty layers, emits a `UserWarning`, and records their names in `result.skipped_layers`. Still raises if *all* layers are empty. |
 | `simplification` | `float \| None` | `None` | Geometry simplification tolerance (tile units). `None` = disabled. |
+
+**Return value**: `WriteResult` — a frozen dataclass with one field:
+
+| Field | Type | Description |
+|---|---|---|
+| `skipped_layers` | `frozenset[str]` | Layer names omitted from the archive because they were empty. Always empty when `empty_layer_policy='error'` (the default). |
 
 ### Property normalisation
 
@@ -83,7 +90,7 @@ the full API reference.
 
 | Exception | When raised |
 |---|---|
-| `EmptyLayerError` | `layers` is empty or a GDF has no features. |
+| `EmptyLayerError` | `layers` is empty; all layers are empty; or any layer is empty with `empty_layer_policy='error'` (default). |
 | `MissingCRSError` | A GDF has no CRS set (explicit source CRS required). |
 | `UnsupportedCRSError` | A GDF's CRS is not EPSG:4326. |
 | `UnsupportedPropertyTypeError` | A column has an unrecognised type, or a list/dict column not in `json_fields`. |

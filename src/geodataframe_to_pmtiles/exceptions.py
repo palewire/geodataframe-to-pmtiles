@@ -8,7 +8,14 @@ class WritePMTilesError(Exception):
 
 
 class EmptyLayerError(WritePMTilesError):
-    """Raised when the layers mapping is empty or a layer has no features."""
+    """Raised when the layers mapping is empty, or all layers have zero features.
+
+    Also raised when ``empty_layer_policy='error'`` (the default) and any
+    individual layer has zero features.  Use ``empty_layer_policy='skip'``
+    to omit empty layers instead; that mode reports which layers were omitted
+    via :attr:`~geodataframe_to_pmtiles.WriteResult.skipped_layers` and a
+    :class:`UserWarning`.
+    """
 
 
 class MissingCRSError(WritePMTilesError):

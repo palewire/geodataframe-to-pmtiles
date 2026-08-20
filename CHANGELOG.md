@@ -22,6 +22,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an explicit set restricts JSON treatment to named columns and raises
   `UnsupportedPropertyTypeError` for unlisted list/dict columns.  GDAL's
   internal list handling is never allowed to leak through.
+- `write_pmtiles` now returns `WriteResult` (a frozen dataclass) instead of
+  `None`.  `WriteResult.skipped_layers` is a `frozenset[str]` of layer names
+  omitted from the archive; it is always empty under the default policy.
+- `empty_layer_policy: Literal["error", "skip"] = "error"` parameter.
+  `"error"` (default) raises `EmptyLayerError` for any empty layer immediately.
+  `"skip"` omits empty layers, emits a `UserWarning` naming each omitted layer,
+  and records the names in `WriteResult.skipped_layers`.  Still raises if all
+  layers are empty (unusable archive).  Intended for the climate-monitor pattern
+  of building a full dict and skipping optional empty layers automatically.
 - `on_overflow: Literal["error", "warn", "ignore"]` parameter (default
   `"warn"`) for the GDAL tile-level drop policy.  Fixed spike-validated
   per-tile caps: `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB` (200,001 z0
