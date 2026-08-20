@@ -655,7 +655,7 @@ def write_pmtiles(
             wgs84_layers[layer_name] = gdf
         else:
             try:
-                # always_xy=True enforces traditional GIS X/Y (lon/lat) order,
+                # GeoPandas to_crs() produces traditional GIS X/Y (lon/lat) order by default,
                 # regardless of GDAL/PyProj axis-order authority conventions.
                 wgs84_layers[layer_name] = gdf.to_crs("EPSG:4326")
             except Exception as exc:

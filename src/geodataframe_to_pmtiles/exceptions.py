@@ -19,12 +19,13 @@ class MissingCRSError(WritePMTilesError):
 
 
 class UnsupportedCRSError(WritePMTilesError):
-    """Raised when a GeoDataFrame's CRS cannot be resolved or transformed.
+    """Raised when a GeoDataFrame's CRS definition cannot be resolved.
 
     This replaces the former "only EPSG:4326 accepted" restriction.  It is
-    now raised only when the CRS definition is unresolvable by the installed
-    geospatial stack, or when the coordinate transformation to EPSG:4326
-    fails at runtime.  The original cause is always chained via ``__cause__``.
+    raised when the CRS definition is unresolvable by the installed geospatial
+    stack (e.g. garbage WKT or an unknown authority code).  Failures that
+    occur *during* coordinate transformation raise ``CRSTransformError``
+    instead.  The original cause is always chained via ``__cause__``.
     """
 
 
