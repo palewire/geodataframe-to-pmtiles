@@ -21,6 +21,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Archive-wide `min_zoom` / `max_zoom` options (defaults: 0 / 8, matching the
   climate-monitor contract of z0-8 for general data).
 - `name` and `description` metadata options stored in the archive.
+- `attribution: str` parameter for `write_pmtiles`; stores a TileJSON-compliant
+  attribution string in the archive's metadata block under the `"attribution"`
+  key.  Unicode and HTML are preserved exactly.  When omitted or set to `""`
+  (the default) the key is not added.  Attribution is injected after GDAL
+  writes the archive using the official `pmtiles.reader` / `pmtiles.tile` APIs:
+  only the metadata section is re-encoded; all MVT tile payloads are preserved
+  byte-for-byte.  Closes #5.
 - `json_fields: Collection[str] | None` parameter for explicit JSON encoding of
   list/dict columns.  `None` (default) auto-encodes all such columns;
   an explicit set restricts JSON treatment to named columns and raises
