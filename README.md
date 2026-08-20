@@ -50,7 +50,7 @@ gpm.write(
 )
 ```
 
-GeoDataFrames passed to `write()` must already carry a CRS. If your
+GeoDataFrames passed to `gpm.write()` must already carry a CRS. If your
 source format does not store CRS metadata, set one before writing:
 
 ```python
@@ -96,13 +96,13 @@ public site will be available at
 **Mapping form** — multiple named layers:
 
 ```
-write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
+gpm.write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
 ```
 
 **Single-frame form** — one layer with an explicit name:
 
 ```
-write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
+gpm.write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
 ```
 
 | Parameter | Type | Default | Description |
