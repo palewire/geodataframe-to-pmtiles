@@ -17,15 +17,16 @@ The GeoJSON fixture is redistributed with permission from the user.
 ## Tippecanoe fixtures
 
 The inputs under `tippecanoe/` were copied from
-[`mapbox/tippecanoe`](https://github.com/mapbox/tippecanoe) test cases pinned to
+[`felt/tippecanoe`](https://github.com/felt/tippecanoe) test cases pinned to
 commit `4f2621186acfec33b63dfd636f665623c0fef2dd`:
 
 - `tests/polygon-winding/in.json`
 - `tests/attribute-type/in.json`
 - `tests/stable/in.json`
 
-Tippecanoe is BSD-2-Clause licensed; see
-[`upstream LICENSE.md`](https://github.com/mapbox/tippecanoe/blob/master/LICENSE.md)
+Tippecanoe is BSD-2-Clause licensed; the upstream `LICENSE.md` at that commit
+includes copyright notices for Protomaps LLC (2022) and Mapbox Inc. (2014).
+See [`upstream LICENSE.md`](https://github.com/felt/tippecanoe/blob/4f2621186acfec33b63ddf636f665623c0fef2dd/LICENSE.md)
 for the full terms. Only the small GeoJSON inputs are tracked here; no upstream
 sample tilesets or PMTiles binaries are copied.
 
