@@ -32,8 +32,8 @@ import geopandas as gpd
 from pathlib import Path
 from geodataframe_to_pmtiles import write_pmtiles
 
-points = gpd.read_file("points.geojson").to_crs("EPSG:4326")
-lines = gpd.read_file("lines.geojson").to_crs("EPSG:4326")
+points = gpd.read_file("points.geojson")
+lines = gpd.read_file("lines.geojson")
 
 write_pmtiles(
     {"points": points, "lines": lines},
@@ -45,6 +45,14 @@ write_pmtiles(
     attribution="© OpenStreetMap contributors",  # optional TileJSON attribution
     on_overflow="error",  # default: reject reported tile-level data loss
 )
+```
+
+GeoDataFrames passed to `write_pmtiles()` must already carry a CRS. If your
+source format does not store CRS metadata, set one before writing:
+
+```python
+points = points.set_crs("EPSG:4326")
+lines = lines.set_crs("EPSG:4326")
 ```
 
 Write to a `BytesIO` stream (useful in web servers or pipelines):
@@ -71,13 +79,13 @@ preservation, and input order.
 
 ### CRS requirement
 
-All GeoDataFrames must be in **EPSG:4326** (geographic WGS 84).  An explicit
-source CRS is required — passing a GeoDataFrame with no CRS set raises
-:class:`~geodataframe_to_pmtiles.MissingCRSError`.  Reproject before calling
-`write_pmtiles`:
+All GeoDataFrames must carry an explicit CRS.  Non-EPSG:4326 inputs are
+auto-reprojected to WGS 84, while a GeoDataFrame with no CRS set raises
+:class:`~geodataframe_to_pmtiles.MissingCRSError`.  If your source format does
+not store CRS metadata, set one before calling `write_pmtiles`:
 
 ```python
-gdf = gdf.to_crs("EPSG:4326")
+gdf = gdf.set_crs("EPSG:4326")
 ```
 
 ### Property normalisation

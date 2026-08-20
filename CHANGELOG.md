@@ -10,6 +10,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `TileLimitViolation` context on `TileOverflowError`, including the GDAL
   limit, configured and observed values, and tile coordinate when available.
+- `write_pmtiles` now accepts GeoDataFrames in **any explicit, resolvable
+  CRS** — not only EPSG:4326.  Each layer is automatically reprojected to
+  EPSG:4326 with traditional GIS X/Y axis order before writing; input
+  GeoDataFrames and geometries are never mutated.  Mixed-CRS layer mappings
+  are fully supported.
+- `CRSTransformError` — raised (chained from the original exception) when a
+  coordinate transformation to EPSG:4326 fails at runtime.
+
+### Changed
+
+- `UnsupportedCRSError` is no longer raised for non-EPSG:4326 inputs; it is
+  now raised only when the CRS definition itself cannot be resolved by the
+  installed geospatial stack.  Callers that previously called
+  `gdf.to_crs("EPSG:4326")` before `write_pmtiles` can keep doing so — the
+  behaviour is unchanged — but the call is no longer required.
 - `write_pmtiles(layers, output, ...)` public API that writes PMTiles vector
   archives from one or more GeoPandas GeoDataFrames using GDAL's native PMTiles
   vector driver - no subprocesses, no temporary files.
@@ -33,15 +48,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an explicit set restricts JSON treatment to named columns and raises
   `UnsupportedPropertyTypeError` for unlisted list/dict columns.  GDAL's
   internal list handling is never allowed to leak through.
-- `on_overflow: Literal["error", "unsafe"]` parameter (default `"error"`) for
-  the GDAL tile-level drop policy. Fixed spike-validated per-tile caps:
-  `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB`. `"error"` raises
-  `TileOverflowError` before writing.
+- `on_overflow: Literal["error", "unsafe"]` parameter (default
+  `"error"`) for the GDAL tile-level drop policy.  Fixed spike-validated
+  per-tile caps: `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB`. `"error"`
+  raises `TileOverflowError` before writing; `"unsafe"` keeps writing after
+  GDAL reports a tile-limit action.
 - `TileOverflowError` exception documenting tested POC caps, GDAL's
   silent-drop limitation, and why post-write enforcement is not possible.
-- Explicit CRS validation: only EPSG:4326 is accepted; `MissingCRSError`
-  (explicit source CRS required) and `UnsupportedCRSError` are raised for
-  invalid inputs.
+- Explicit CRS validation: `MissingCRSError` is raised when a source CRS is
+  absent, and `UnsupportedCRSError` is raised when its definition cannot be
+  resolved.
 - `EmptyLayerError` for empty layer mappings or GeoDataFrames with no features.
 - Deterministic property normalisation: numpy scalars and
   `datetime`/`pd.Timestamp` normalised to Python native types before OGR
