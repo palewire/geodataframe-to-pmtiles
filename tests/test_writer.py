@@ -1640,7 +1640,7 @@ def test_epsg4326_source_decodes_correctly(tmp_path: Path) -> None:
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
 
     out = tmp_path / "crs4326.pmtiles"
-    _write_ignore({"pts": _point_gdf_4326()}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": _point_gdf_4326()}, out, min_zoom=0, max_zoom=0)
     _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
     assert "pts" in layers
     summary = summarize_features(layers["pts"]["features"])
@@ -1655,7 +1655,7 @@ def test_epsg3857_source_decodes_equivalently(tmp_path: Path) -> None:
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
 
     out = tmp_path / "crs3857.pmtiles"
-    _write_ignore({"pts": _point_gdf_3857()}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": _point_gdf_3857()}, out, min_zoom=0, max_zoom=0)
     _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
     assert "pts" in layers
     summary = summarize_features(layers["pts"]["features"])
@@ -1670,7 +1670,7 @@ def test_projected_crs_decodes_equivalently(tmp_path: Path) -> None:
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
 
     out = tmp_path / "crs25832.pmtiles"
-    _write_ignore({"pts": _point_gdf_projected()}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": _point_gdf_projected()}, out, min_zoom=0, max_zoom=0)
     _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
     assert "pts" in layers
     summary = summarize_features(layers["pts"]["features"])
@@ -1684,7 +1684,7 @@ def test_non_epsg_proj_string_decodes_correctly(tmp_path: Path) -> None:
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
 
     out = tmp_path / "crs_proj.pmtiles"
-    _write_ignore({"pts": _point_gdf_non_epsg()}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": _point_gdf_non_epsg()}, out, min_zoom=0, max_zoom=0)
     _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
     assert "pts" in layers
     summary = summarize_features(layers["pts"]["features"])
@@ -1711,8 +1711,8 @@ def test_auto_reprojected_sources_match_pretransformed_4326(
 
     expected = tmp_path / f"expected-{label}.pmtiles"
     actual = tmp_path / f"actual-{label}.pmtiles"
-    _write_ignore({"pts": _point_gdf_4326()}, expected, min_zoom=0, max_zoom=0)
-    _write_ignore({"pts": source_factory()}, actual, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": _point_gdf_4326()}, expected, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": source_factory()}, actual, min_zoom=0, max_zoom=0)
 
     expected_features = read_pmtiles_archive(expected, z=0, x=0, y=0)[2]["pts"][
         "features"
@@ -1728,7 +1728,7 @@ def test_mixed_crs_layers_decode_correctly(tmp_path: Path) -> None:
     from .pmtiles_semantics import read_pmtiles_archive, summarize_features
 
     out = tmp_path / "mixed_crs.pmtiles"
-    _write_ignore(
+    _write_safe(
         {
             "pts_4326": _point_gdf_4326(),
             "pts_3857": _point_gdf_3857(),
@@ -1758,7 +1758,7 @@ def test_reprojection_preserves_property_values(tmp_path: Path) -> None:
         crs="EPSG:3857",
     )
     out = tmp_path / "repro_props.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
     _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
     assert "lyr" in layers
     names = {f["properties"].get("name") for f in layers["lyr"]["features"]}

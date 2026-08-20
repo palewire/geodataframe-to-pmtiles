@@ -744,6 +744,7 @@ def write_pmtiles(
                 "features may be missing or geometry precision may be reduced.",
                 UserWarning,
                 stacklevel=2,
+            )
         data = _read_vsimem(vsimem_path, gdal)
     finally:
         gdal.Unlink(vsimem_path)
