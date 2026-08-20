@@ -19,7 +19,21 @@ class MissingCRSError(WritePMTilesError):
 
 
 class UnsupportedCRSError(WritePMTilesError):
-    """Raised when a GeoDataFrame's CRS is not EPSG:4326."""
+    """Raised when a GeoDataFrame's CRS cannot be resolved or transformed.
+
+    This replaces the former "only EPSG:4326 accepted" restriction.  It is
+    now raised only when the CRS definition is unresolvable by the installed
+    geospatial stack, or when the coordinate transformation to EPSG:4326
+    fails at runtime.  The original cause is always chained via ``__cause__``.
+    """
+
+
+class CRSTransformError(WritePMTilesError):
+    """Raised when a coordinate transformation to EPSG:4326 fails.
+
+    The original exception from pyproj / GDAL is always chained as
+    ``__cause__`` so callers can inspect the root error.
+    """
 
 
 class UnsupportedPropertyTypeError(WritePMTilesError):

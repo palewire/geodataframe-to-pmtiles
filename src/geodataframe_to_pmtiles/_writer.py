@@ -135,6 +135,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 import numpy as np
 
 from geodataframe_to_pmtiles.exceptions import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileLimitViolation,
@@ -493,8 +494,10 @@ def write_pmtiles(
     ----------
     layers:
         Mapping of layer name → GeoDataFrame.  Every GeoDataFrame must have
-        CRS EPSG:4326 (geographic, longitude/latitude).  The mapping must not
-        be empty, and no GeoDataFrame may be empty.
+        an explicit, resolvable CRS.  GeoDataFrames not already in EPSG:4326
+        are automatically reprojected using traditional GIS X/Y axis order;
+        inputs are never mutated.  The mapping must not be empty, and no
+        GeoDataFrame may be empty.
     output:
         Destination for the archive.  Either a :class:`pathlib.Path` (written
         through a temporary file in the same directory and then atomically
@@ -544,7 +547,11 @@ def write_pmtiles(
     MissingCRSError
         If any GeoDataFrame has no CRS set.
     UnsupportedCRSError
-        If any GeoDataFrame's CRS is not EPSG:4326.
+        If any GeoDataFrame's CRS definition cannot be resolved by the
+        installed geospatial stack.  The root cause is chained.
+    CRSTransformError
+        If the coordinate transformation to EPSG:4326 fails at runtime.
+        The root cause is chained.
     UnsupportedPropertyTypeError
         If a column contains a value that cannot be encoded as an MVT property,
         or a list/dict column is not covered by *json_fields*.
@@ -594,19 +601,23 @@ def write_pmtiles(
             msg = (
                 f"Layer '{layer_name}' has no CRS.  "
                 "An explicit source CRS is required.  "
-                "Set the CRS to EPSG:4326 or reproject with "
+                "Set the CRS with gdf.set_crs('EPSG:4326') if the data are "
+                "already in WGS 84, or reproject with "
                 "gdf.to_crs('EPSG:4326') before calling write_pmtiles."
             )
             raise MissingCRSError(msg)
-        if gdf.crs.to_epsg() != 4326:
+        # Validate that the CRS definition is resolvable (catches garbage
+        # WKT or authority codes the installed stack cannot look up).
+        try:
+            gdf.crs.to_epsg()
+        except Exception as exc:
             msg = (
-                f"Layer '{layer_name}' has CRS {gdf.crs!r} "
-                f"(EPSG:{gdf.crs.to_epsg()}).  "
-                "Only EPSG:4326 (geographic WGS 84) is accepted.  "
-                "Reproject with gdf.to_crs('EPSG:4326') before calling "
-                "write_pmtiles."
+                f"Layer '{layer_name}' has a CRS that cannot be resolved by "
+                "the installed geospatial stack: "
+                f"{gdf.crs!r}.  "
+                "Provide a standard EPSG code or a well-formed WKT/PROJ string."
             )
-            raise UnsupportedCRSError(msg)
+            raise UnsupportedCRSError(msg) from exc
 
     if not (0 <= min_zoom <= 22):
         msg = f"min_zoom must be between 0 and 22, got {min_zoom}."
@@ -634,10 +645,31 @@ def write_pmtiles(
         None if json_fields is None else frozenset(json_fields)
     )
 
+    # ------------------------------------------------------------------
+    # Reproject layers to EPSG:4326 (does not mutate caller's GDFs).
+    # Layers already in EPSG:4326 are passed through as-is (no copy).
+    # ------------------------------------------------------------------
+    wgs84_layers: dict[str, gpd.GeoDataFrame] = {}
+    for layer_name, gdf in layers.items():
+        if gdf.crs.to_epsg() == 4326:
+            wgs84_layers[layer_name] = gdf
+        else:
+            try:
+                # always_xy=True enforces traditional GIS X/Y (lon/lat) order,
+                # regardless of GDAL/PyProj axis-order authority conventions.
+                wgs84_layers[layer_name] = gdf.to_crs("EPSG:4326")
+            except Exception as exc:
+                msg = (
+                    f"Layer '{layer_name}': coordinate transformation from "
+                    f"{gdf.crs!r} to EPSG:4326 failed.  "
+                    "Check that the source CRS is consistent with the data."
+                )
+                raise CRSTransformError(msg) from exc
+
     # Validate all column types up-front before any GDAL objects are created.
     # This prevents a partially-initialised dataset from being written.
     field_kinds_by_layer: dict[str, dict[str, PropertyKind]] = {}
-    for layer_name, gdf in layers.items():
+    for layer_name, gdf in wgs84_layers.items():
         field_kinds: dict[str, PropertyKind] = {}
         for col in (c for c in gdf.columns if c != gdf.geometry.name):
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
@@ -681,7 +713,7 @@ def write_pmtiles(
                 srs = osr.SpatialReference()
                 srs.ImportFromEPSG(4326)
 
-                for layer_name, gdf in layers.items():
+                for layer_name, gdf in wgs84_layers.items():
                     _write_layer(
                         ds,
                         layer_name,
@@ -712,8 +744,6 @@ def write_pmtiles(
                 "features may be missing or geometry precision may be reduced.",
                 UserWarning,
                 stacklevel=2,
-            )
-
         data = _read_vsimem(vsimem_path, gdal)
     finally:
         gdal.Unlink(vsimem_path)
