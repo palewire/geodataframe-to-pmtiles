@@ -74,6 +74,16 @@ def _write_safe(layers, output, **kwargs):
     write_pmtiles(layers, output, **kwargs)
 
 
+def _write_ignore(layers, output, **kwargs):
+    """Write an archive suppressing tile-overflow errors (unsafe policy).
+
+    Used in semantic tests where the small feature count may cause GDAL to
+    report overflow at coarse zoom levels; the test focus is output semantics,
+    not overflow behaviour.
+    """
+    write_pmtiles(layers, output, on_overflow="unsafe", **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _skip_integration_without_gdal(request: pytest.FixtureRequest) -> None:
     """Skip integration tests when the native GDAL runtime is unavailable."""
