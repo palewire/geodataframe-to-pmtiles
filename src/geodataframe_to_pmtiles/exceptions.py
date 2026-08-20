@@ -28,7 +28,11 @@ class UnsupportedPropertyTypeError(WritePMTilesError):
 
 @dataclass(frozen=True)
 class TileLimitViolation:
-    """A GDAL MVT tile-limit diagnostic captured while writing an archive."""
+    """A GDAL MVT tile-limit diagnostic captured while writing an archive.
+
+    ``requested`` is the configured limit passed to GDAL.
+    ``observed`` is the value parsed from GDAL's diagnostic text.
+    """
 
     limit: Literal["MAX_FEATURES", "MAX_SIZE"]
     requested: int
@@ -40,7 +44,7 @@ class TileOverflowError(WritePMTilesError):
     """Raised when GDAL reports a tile limit that can lose data or precision.
 
     The archive is discarded before the caller's destination is changed.  The
-    The ``violations`` attribute gives the limit, configured value, observed
+    ``violations`` attribute gives the limit, configured value, observed
     value, and tile coordinate reported by GDAL.
     """
 

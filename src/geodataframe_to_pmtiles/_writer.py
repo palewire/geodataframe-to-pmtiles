@@ -113,6 +113,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import math
+import tempfile
 import uuid
 from importlib import import_module
 from io import IOBase
@@ -403,7 +404,7 @@ class _GDALDiagnosticCapture:
                     violations.append(
                         TileLimitViolation(
                             limit="MAX_FEATURES",
-                            requested=limit,
+                            requested=_MAX_FEATURES,
                             observed=limit,
                             tile=coordinates,
                         )
@@ -468,9 +469,9 @@ def write_pmtiles(
         CRS EPSG:4326 (geographic, longitude/latitude).  The mapping must not
         be empty, and no GeoDataFrame may be empty.
     output:
-        Destination for the archive.  Either a :class:`pathlib.Path` (the
-        file is created or overwritten) or any binary-writable stream such as
-        :class:`io.BytesIO`.
+        Destination for the archive.  Either a :class:`pathlib.Path` (written
+        through a temporary file in the same directory and then atomically
+        replaced) or any binary-writable stream such as :class:`io.BytesIO`.
     min_zoom:
         Archive-wide minimum zoom level (0-22, default 0).
     max_zoom:
@@ -673,7 +674,7 @@ def write_pmtiles(
         gdal.Unlink(vsimem_path)
 
     if isinstance(output, Path):
-        output.write_bytes(data)
+        _write_path_atomic(output, data)
     elif isinstance(output, IOBase) or hasattr(output, "write"):
         output.write(data)
     else:
@@ -786,3 +787,22 @@ def _read_vsimem(path: str, gdal: Any) -> bytes:
     finally:
         gdal.VSIFCloseL(vf)
     return bytes(raw)
+
+
+def _write_path_atomic(output: Path, data: bytes) -> None:
+    """Atomically replace *output* with *data* using a temporary sibling file."""
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(output.parent),
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_file.write(data)
+            temp_path = Path(tmp_file.name)
+        temp_path.replace(output)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
