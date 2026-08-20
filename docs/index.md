@@ -164,7 +164,7 @@ measures wall time, peak memory, tile count, and archive size for both `Path`
 and `BytesIO` output modes.
 
 ```sh
-# Install test extras (adds the pmtiles Python reader for tile-count reporting)
+# Install the test group (includes the pmtiles Python reader for tile-count reporting)
 uv sync --group test --group test-extras --locked
 
 # Full suite (1 k, 10 k, 50 k, 100 k features)

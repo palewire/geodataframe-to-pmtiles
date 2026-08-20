@@ -1149,6 +1149,76 @@ def test_optimised_path_and_bytesio_decoded_equivalent(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_optimised_path_string_isoformat_fallback(tmp_path: Path) -> None:
+    """String-kind values with an isoformat method still round-trip as strings."""
+    from osgeo import gdal
+
+    class _IsoValue:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def isoformat(self) -> str:
+            return f"iso-{self.label}"
+
+    gdf = gpd.GeoDataFrame(
+        {"stamp": [_IsoValue("a"), _IsoValue("b"), _IsoValue("c")]},
+        geometry=[Point(float(i), 0.0) for i in range(3)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "isoformat.pmtiles"
+    _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
+
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+    values = [feat.GetField("stamp") for feat in lyr]
+    assert values == ["iso-a", "iso-b", "iso-c"]
+    ds = None
+
+
+@pytest.mark.integration
+def test_optimised_path_skips_invalid_wkb_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A geometry conversion failure is skipped without stopping the layer write."""
+    from osgeo import gdal, ogr
+
+    gdf = gpd.GeoDataFrame(
+        {"idx": [1, 2, 3]},
+        geometry=[
+            Point(0.0, 0.0),
+            Point(1.0, 1.0),
+            Point(2.0, 2.0),
+        ],
+        crs="EPSG:4326",
+    )
+
+    original = ogr.CreateGeometryFromWkb
+    calls = {"count": 0}
+
+    def _fake_create_geometry_from_wkb(wkb: bytes) -> object | None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return None
+        return original(wkb)
+
+    monkeypatch.setattr(ogr, "CreateGeometryFromWkb", _fake_create_geometry_from_wkb)
+
+    out = tmp_path / "skip-geometry.pmtiles"
+    _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
+
+    assert calls["count"] == 3
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+    assert sum(1 for _ in lyr) == 2
+    ds = None
+
+
+@pytest.mark.integration
 def test_optimised_path_feature_order_preserved(tmp_path: Path) -> None:
     """Optimised path writes features in input (DataFrame row) order."""
     from osgeo import ogr

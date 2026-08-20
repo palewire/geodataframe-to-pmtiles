@@ -82,31 +82,37 @@ for the string-kind fallback), and all existing tests continue to pass.
 
 ## Wall-time and memory comparison
 
-Measurements: median of 3 warm-up runs (BytesIO output unless noted).
-Peak memory via `tracemalloc` (Python-level allocations only; not total RSS).
+Measurements: median of 3 timed runs after 1 warm-up run. Peak memory via
+`tracemalloc` (Python-level allocations only; not total RSS).
 
-| scale  | output  | wall\_s before | wall\_s after | delta   | peak\_mb |
-| ------:| -------:| -------------:| ------------:| -------:| --------:|
-|  1 000 | BytesIO |        0.355 s |       0.480 s |  +35%\* |    1.0 MB |
-|  1 000 |    Path |            —  |       0.345 s |    —    |    1.0 MB |
-| 10 000 | BytesIO |        5.197 s |       4.141 s |  −20%   |    7.5 MB |
-| 10 000 |    Path |            —  |       3.968 s |    —    |    7.5 MB |
+Independent reproduction on this machine with the same harness, inputs, and
+warm-up showed smaller gains than the original report, but the direction is
+consistent.
 
-\* At 1 k features the GDAL tile-compression overhead (fixed per-run cost)
-dominates and obscures the per-feature savings.  The improvement is visible
-at 10 k and scales linearly with feature count.
+| scale  | output  | baseline wall\_s | current wall\_s | delta | peak\_mb |
+| ------:| -------:| ----------------:| --------------:| -----:| --------:|
+|  1 000 | Path    |           0.364 s |        0.323 s |  -11% |    1.0 MB |
+|  1 000 | BytesIO |           0.306 s |        0.290 s |   -5% |    1.0 MB |
+| 10 000 | Path    |           3.040 s |        2.829 s |   -7% |    7.5 MB |
+| 10 000 | BytesIO |           2.966 s |        2.820 s |   -5% |    7.5 MB |
+| 50 000 | Path    |          15.907 s |       14.476 s |   -9% |   30.9 MB |
+| 50 000 | BytesIO |          15.611 s |       15.524 s |   -1% |   30.9 MB |
+| 100 000 | Path   |          41.030 s |       36.855 s |  -10% |   56.6 MB |
+| 100 000 | BytesIO |          44.564 s |       43.475 s |   -2% |   56.6 MB |
 
 The internal test suite (`test_poc_caps_preserve_200k_z0_features`, 200 k
-features, z0) improved from **13.37 s → 7.08 s** (−47%).
+features, z0) measured **15.23 s → 12.37 s** (−19%) on this machine.
 
 ---
 
 ## Tile count and archive size (post-optimisation)
 
-| scale  | tile\_entries | archive  |
-| ------:| -------------:| --------:|
-|  1 000 |         3 726 |   496 KB |
-| 10 000 |        20 609 | 3 853 KB |
+| scale   | tile\_entries | archive  |
+| ------: | -------------:| --------:|
+|  1 000  |         3 726 |   496 KB |
+| 10 000  |        20 609 | 3 853 KB |
+| 50 000  |        50 904 | 15 822 KB |
+| 100 000 |        65 598 | 28 990 KB |
 
 ---
 
@@ -144,7 +150,7 @@ returns.
 ## How to reproduce
 
 ```sh
-# Install test extras (includes pmtiles reader for tile-count reporting)
+# Install the test group (includes the pmtiles reader for tile-count reporting)
 uv sync --group test --group test-extras --locked
 
 # Ensure GDAL with PMTiles driver is available (e.g. from Homebrew)

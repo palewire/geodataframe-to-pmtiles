@@ -20,7 +20,7 @@ Output columns
 --------------
 scale       : number of input point features
 output      : "Path" or "BytesIO"
-wall_s      : median wall-clock time in seconds (3 warm-up runs)
+wall_s      : median wall-clock time in seconds (3 timed runs after 1 warm-up)
 peak_mb     : tracemalloc peak memory in MiB for the first timed run
 archive_kb  : compressed PMTiles archive size in KiB
 tile_count  : number of tiles in the archive (from PMTiles header)
