@@ -34,7 +34,6 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and polygons",
-    on_overflow="warn",  # default: warn about GDAL tile-level drop risk
 )
 ```
 
@@ -44,7 +43,7 @@ Write to a `BytesIO` stream instead of a file:
 import io
 
 buf = io.BytesIO()
-write_pmtiles({"points": points}, buf, on_overflow="ignore")
+write_pmtiles({"points": points}, buf)
 ```
 
 ## Test coverage
@@ -71,7 +70,7 @@ the full API reference.
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |
 | `description` | `str` | `""` | Human-readable description in archive metadata. |
 | `json_fields` | `Collection[str] \| None` | `None` | Columns to JSON-encode (list/dict values). `None` auto-encodes all; explicit set restricts to named columns only. |
-| `on_overflow` | `"error" \| "warn" \| "ignore"` | `"warn"` | Policy for GDAL tile-level drop risk. See overflow notes below. |
+| `on_overflow` | `"error" \| "unsafe"` | `"error"` | Reject detected GDAL tile-limit actions, or explicitly accept them. |
 | `simplification` | `float \| None` | `None` | Geometry simplification tolerance (tile units). `None` = disabled. |
 
 ### Property normalisation
@@ -101,22 +100,33 @@ values.
 | `MissingCRSError` | A GDF has no CRS set (explicit source CRS required). |
 | `UnsupportedCRSError` | A GDF's CRS is not EPSG:4326. |
 | `UnsupportedPropertyTypeError` | A column has an unrecognised type, or a list/dict column not in `json_fields`. |
-| `TileOverflowError` | `on_overflow='error'` — raised before writing; caller must acknowledge limitation. |
+| `TileOverflowError` | GDAL reported a feature-cap rebuild or size-driven geometry recode. The destination is unchanged. |
 
 ## Overflow policy
 
-The GDAL PMTiles driver silently drops features when a tile exceeds its fixed
-per-tile caps: **`MAX_FEATURES = 300,000`** and **`MAX_SIZE = 10 MB`**.
-These are spike-validated POC values (200,001 z0 features preserved in
-630,430 compressed bytes) — not unlimited.  Setting `MAX_FEATURES=0` does
-not disable the limit; GDAL clamps it to its internal minimum.  Dense spatial
-clustering can still produce tiles that exceed the caps, and GDAL provides no
-post-write overflow signal.
+GDAL's MVT encoder can drop features after `MAX_FEATURES` is reached and
+reduce geometry precision after `MAX_SIZE` is exceeded. The writer uses
+practical limits (300,000 features and 10 MB per tile) and captures the
+encoder's diagnostics during finalization. The default
+`on_overflow="error"` raises `TileOverflowError` and leaves the `Path` or
+stream untouched when either action occurs. Its `violations` describe the
+limit, configured value, observed value, and tile coordinate when GDAL reports
+one.
 
-* `on_overflow="error"` — refuses to write; caller must opt in to `"warn"` or
-  `"ignore"` after acknowledging the limitation.
-* `on_overflow="warn"` (default) — emits a `UserWarning` before writing.
-* `on_overflow="ignore"` — writes silently.
+The 200,001-feature z0 spike remains supported and is independently decoded
+in the test suite. This is not a capacity promise: a clustered layer or dense
+geometry can still exceed a tile limit, but it cannot be published through the
+default API after GDAL reports that action.
+
+`on_overflow="unsafe"` is an explicit opt-out. It emits a warning and may
+publish an archive with missing features or lower-precision geometry.
+
+### Climate-monitor guidance
+
+Use the default policy for climate cell layers and treat `TileOverflowError` as
+a signal to split the layer or lower its density at the affected zoom. Do not
+use `on_overflow="unsafe"` for maps where holes or coordinate changes would
+alter reported conditions.
 
 ## Known limitations
 

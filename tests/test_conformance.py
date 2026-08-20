@@ -81,7 +81,6 @@ def _write_archive(
         max_zoom=0,
         name=name,
         description=description,
-        on_overflow="ignore",
     )
 
 
