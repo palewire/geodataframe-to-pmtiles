@@ -42,9 +42,11 @@ make coverage PACKAGE=geodataframe_to_pmtiles
 ```
 
 `make build` creates both a wheel and source distribution and runs `twine
-check`. Inspect their contents before release: the wheel and sdist must include
-the package, `py.typed`, license, README, and changelog, but not tests,
-fixtures, benchmarks, local environments, or generated archives.
+check`. Inspect their contents before release: the source distribution must
+include the package, `py.typed`, license, README, and changelog. The wheel must
+include the package, `py.typed`, its license file, and README-derived metadata.
+Neither artifact should include tests, fixtures, benchmarks, local
+environments, or generated archives.
 
 `geodataframe_to_pmtiles` deliberately has no PyPI GDAL dependency: the
 package imports without GDAL, while `gpm.write()` requires a native GDAL
