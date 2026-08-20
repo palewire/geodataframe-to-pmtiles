@@ -890,9 +890,7 @@ def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
 def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
     """write_pmtiles stores attribution in metadata when output is a Path."""
     out = tmp_path / "attr.pmtiles"
-    _write_ignore(
-        {"pts": _points_gdf()}, out, attribution="Reuters, ECMWF"
-    )
+    _write_ignore({"pts": _points_gdf()}, out, attribution="Reuters, ECMWF")
 
     meta = _read_pmtiles_metadata(out.read_bytes())
     assert meta.get("attribution") == "Reuters, ECMWF"
@@ -902,9 +900,7 @@ def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
 def test_attribution_stored_in_metadata_bytesio() -> None:
     """write_pmtiles stores attribution in metadata when output is a BytesIO."""
     buf = io.BytesIO()
-    _write_ignore(
-        {"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF"
-    )
+    _write_ignore({"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF")
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -1030,10 +1026,7 @@ def test_attribution_era5_fixture(tmp_path: Path) -> None:
     )
 
     meta = _read_pmtiles_metadata(out.read_bytes())
-    assert (
-        meta.get("attribution")
-        == "Reuters, ECMWF"
-    )
+    assert meta.get("attribution") == "Reuters, ECMWF"
     # Tiles must still be present.
     from pmtiles.reader import MemorySource, all_tiles
 
