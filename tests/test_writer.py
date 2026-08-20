@@ -6,7 +6,6 @@ import importlib
 import importlib.util
 import io
 import json
-import warnings
 from pathlib import Path
 
 import geopandas as gpd
@@ -23,6 +22,8 @@ from geodataframe_to_pmtiles import (
     UnsupportedPropertyTypeError,
     write_pmtiles,
 )
+
+from .pmtiles_semantics import read_pmtiles_archive
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,9 +69,9 @@ def _open_pmtiles_bytes(data: bytes) -> tuple[gdal.Dataset, str]:  # noqa: F821
     return ds, path
 
 
-def _write_ignore(layers, output, **kwargs):
-    """Call write_pmtiles with on_overflow='ignore' to suppress the default warning."""
-    write_pmtiles(layers, output, on_overflow="ignore", **kwargs)
+def _write_safe(layers, output, **kwargs):
+    """Write an archive through the default safe overflow policy."""
+    write_pmtiles(layers, output, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +95,7 @@ def test_two_layer_archive_path(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "two_layers.pmtiles"
-    _write_ignore(
+    _write_safe(
         {"points": _points_gdf(), "lines": _lines_gdf()},
         out,
         min_zoom=0,
@@ -125,7 +126,7 @@ def test_two_layer_archive_path(tmp_path: Path) -> None:
 def test_two_layer_archive_bytesio() -> None:
     """write_pmtiles writes a two-layer archive to a BytesIO stream."""
     buf = io.BytesIO()
-    _write_ignore(
+    _write_safe(
         {"points": _points_gdf(), "lines": _lines_gdf()},
         buf,
         min_zoom=0,
@@ -156,9 +157,7 @@ def test_layer_names_are_exact_source_names(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "named.pmtiles"
-    _write_ignore(
-        {"climate_zones": _points_gdf(), "admin_boundaries": _lines_gdf()}, out
-    )
+    _write_safe({"climate_zones": _points_gdf(), "admin_boundaries": _lines_gdf()}, out)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
     assert "climate_zones" in names
@@ -183,7 +182,7 @@ def test_feature_order_preserved(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "order.pmtiles"
-    _write_ignore({"ordered": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"ordered": gdf}, out, min_zoom=0, max_zoom=4)
 
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
@@ -207,7 +206,7 @@ def test_string_properties(tmp_path: Path) -> None:
 
     gdf = _points_gdf()
     out = tmp_path / "strings.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     names = {feat.GetField("name") for feat in lyr}
@@ -231,7 +230,7 @@ def test_integer_properties(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "int.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("count"))
@@ -253,7 +252,7 @@ def test_float_properties(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "float.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("ratio"))
@@ -272,7 +271,7 @@ def test_bool_stored_as_integer(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "bool.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("flag"))
@@ -293,7 +292,7 @@ def test_nullable_float_nan_is_null(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "nan.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     # PMTiles returns null fields as None (IsFieldNull may not be set).
@@ -313,7 +312,7 @@ def test_none_stored_as_null(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "none.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     null_count = sum(1 for feat in lyr if feat.GetField("label") is None)
@@ -332,7 +331,7 @@ def test_pd_na_treated_as_null(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "pdna.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     null_count = sum(1 for feat in lyr if feat.GetField("label") is None)
@@ -356,7 +355,7 @@ def test_list_property_json_encoded_auto(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "list_auto.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     raw_values = [
@@ -380,7 +379,7 @@ def test_dict_property_json_encoded_auto(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "dict_auto.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     raw_values = [
@@ -404,7 +403,7 @@ def test_list_property_json_encoded_explicit(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "list_explicit.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["tags"])
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["tags"])
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     raw_values = [
@@ -427,7 +426,7 @@ def test_mixed_json_column_is_stringified(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "mixed.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["mixed"])
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["mixed"])
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     seen: dict[int, str] = {}
@@ -448,7 +447,7 @@ def test_list_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 @pytest.mark.unit
@@ -460,46 +459,98 @@ def test_dict_column_not_in_json_fields_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[])
 
 
 # ---------------------------------------------------------------------------
-# on_overflow policy
+# Overflow policy
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_on_overflow_error_raises_before_write() -> None:
-    """on_overflow='error' raises TileOverflowError before any data is written."""
-    buf = io.BytesIO()
-    with pytest.raises(TileOverflowError, match="on_overflow"):
-        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="error")
-    # Nothing should have been written.
-    assert buf.tell() == 0
+@pytest.mark.integration
+def test_feature_overflow_raises_before_path_is_overwritten(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A feature cap diagnostic rejects the archive and preserves the destination."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+    clustered = gpd.GeoDataFrame(
+        {"id": [1, 2, 3]},
+        geometry=[Point(0.0, 0.0), Point(0.0, 0.0), Point(0.0, 0.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "existing.pmtiles"
+    out.write_bytes(b"keep this archive")
+
+    with pytest.raises(TileOverflowError) as caught:
+        write_pmtiles({"clustered": clustered}, out, min_zoom=0, max_zoom=0)
+
+    violations = caught.value.violations
+    assert len(violations) == 1
+    violation = violations[0]
+    assert violation.limit == "MAX_FEATURES"
+    assert violation.requested == writer_module._MAX_FEATURES
+    assert violation.observed == writer_module._MAX_FEATURES
+    assert violation.tile == (0, 0, 0)
+    assert out.read_bytes() == b"keep this archive"
 
 
-@pytest.mark.unit
-def test_on_overflow_warn_emits_warning() -> None:
-    """on_overflow='warn' (default) emits a UserWarning mentioning the caps."""
-    buf = io.BytesIO()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        write_pmtiles({"lyr": _points_gdf()}, buf)
-    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-    assert len(overflow_warnings) >= 1
-    msg = str(overflow_warnings[0].message).lower()
-    assert "overflow" in msg or "max_features" in msg or "300" in msg
+@pytest.mark.integration
+def test_size_overflow_raises_before_stream_is_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A size-driven geometry recode rejects the archive and preserves a stream."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_SIZE", 100)
+    coordinates = [
+        (float(index % 360) - 180.0, float((index * 17) % 170) - 85.0)
+        for index in range(4_000)
+    ]
+    gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[LineString(coordinates)],
+        crs="EPSG:4326",
+    )
+    stream = io.BytesIO(b"keep this archive")
+    stream.seek(0)
+
+    with pytest.raises(TileOverflowError) as caught:
+        write_pmtiles({"dense": gdf}, stream, min_zoom=0, max_zoom=0)
+
+    violations = caught.value.violations
+    assert violations
+    assert {violation.requested for violation in violations} == {
+        writer_module._MAX_SIZE
+    }
+    assert all(violation.observed >= violation.requested for violation in violations)
+    violation = violations[0]
+    assert violation.limit == "MAX_SIZE"
+    assert violation.requested == writer_module._MAX_SIZE
+    assert violation.observed > violation.requested
+    assert violation.tile == (0, 0, 0)
+    assert stream.getvalue() == b"keep this archive"
 
 
-@pytest.mark.unit
-def test_on_overflow_ignore_no_warning() -> None:
-    """on_overflow='ignore' suppresses the overflow warning."""
-    buf = io.BytesIO()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="ignore")
-    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-    assert len(overflow_warnings) == 0
+@pytest.mark.integration
+def test_unsafe_overflow_opt_out_warns_and_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explicit unsafe mode is the only mode that permits an overflow."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
+    buffer = io.BytesIO()
+    with pytest.warns(UserWarning, match="unsafe"):
+        write_pmtiles(
+            {"lyr": _points_gdf()},
+            buffer,
+            min_zoom=0,
+            max_zoom=0,
+            on_overflow="unsafe",
+        )
+    assert buffer.getvalue()
 
 
 @pytest.mark.unit
@@ -528,7 +579,7 @@ def test_missing_gdal_runtime_raises_runtime_error(
     monkeypatch.setattr(writer_module, "import_module", _missing_osgeo)
 
     with pytest.raises(RuntimeError, match="GDAL Python bindings are required"):
-        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="ignore")
+        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="unsafe")
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +596,7 @@ def test_poc_caps_allow_normal_dataset(tmp_path: Path) -> None:
         geometry=[Point(float(i % 10), float(i // 10)) for i in range(100)],
         crs="EPSG:4326",
     )
-    _write_ignore({"lyr": large_gdf}, out)
+    _write_safe({"lyr": large_gdf}, out)
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -569,7 +620,9 @@ def test_poc_caps_preserve_200k_z0_features(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "large_z0.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out)
+    assert len(layers["lyr"]["features"]) == n
     assert out.exists()
     size = out.stat().st_size
     # Spike result: 630,430 bytes.  Allow ±50 % for driver/compression variance.
@@ -577,6 +630,35 @@ def test_poc_caps_preserve_200k_z0_features(tmp_path: Path) -> None:
         f"Archive size {size:,} bytes is outside the expected spike range "
         "(300 K – 1.5 MB). Caps may have changed."
     )
+
+
+@pytest.mark.integration
+def test_default_feature_overflow_rejects_300001_z0_features(
+    tmp_path: Path,
+) -> None:
+    """The default 300,000 feature cap rejects the exact 300,001-feature stress case."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    n = 300_001
+    gdf = gpd.GeoDataFrame(
+        {"id": range(n)},
+        geometry=[
+            Point(float(i % 360) - 180.0, float((i // 360) % 170) - 85.0)
+            for i in range(n)
+        ],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "overflow_300001.pmtiles"
+
+    with pytest.raises(TileOverflowError) as caught:
+        write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+
+    violation = caught.value.violations[0]
+    assert violation.limit == "MAX_FEATURES"
+    assert violation.requested == writer_module._MAX_FEATURES
+    assert violation.observed == writer_module._MAX_FEATURES
+    assert violation.tile == (0, 0, 0)
+    assert not out.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +672,7 @@ def test_zoom_metadata_stored(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "zoom.pmtiles"
-    _write_ignore({"lyr": _points_gdf()}, out, min_zoom=2, max_zoom=7)
+    _write_safe({"lyr": _points_gdf()}, out, min_zoom=2, max_zoom=7)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     meta = ds.GetMetadata()
     assert meta.get("minzoom") == "2"
@@ -604,7 +686,7 @@ def test_default_zoom_range(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "default_zoom.pmtiles"
-    _write_ignore({"lyr": _points_gdf()}, out)
+    _write_safe({"lyr": _points_gdf()}, out)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     meta = ds.GetMetadata()
     assert meta.get("minzoom") == "0"
@@ -623,7 +705,7 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "meta.pmtiles"
-    _write_ignore(
+    _write_safe(
         {"lyr": _points_gdf()},
         out,
         name="my map",
@@ -644,7 +726,6 @@ def test_attribution_parameter_not_accepted() -> None:
             {"lyr": _points_gdf()},
             io.BytesIO(),
             attribution="© test",  # type: ignore[call-overload]
-            on_overflow="ignore",
         )
 
 
@@ -657,16 +738,35 @@ def test_attribution_parameter_not_accepted() -> None:
 def test_path_output_creates_file(tmp_path: Path) -> None:
     """write_pmtiles creates a file at the given Path."""
     out = tmp_path / "out.pmtiles"
-    _write_ignore({"lyr": _points_gdf()}, out)
+    _write_safe({"lyr": _points_gdf()}, out)
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+@pytest.mark.integration
+def test_path_output_replace_failure_preserves_existing_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If the final replace fails, the original Path contents stay untouched."""
+    out = tmp_path / "out.pmtiles"
+    out.write_bytes(b"keep this archive")
+
+    def _raise_replace(_self: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(type(out), "replace", _raise_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        _write_safe({"lyr": _points_gdf()}, out)
+
+    assert out.read_bytes() == b"keep this archive"
 
 
 @pytest.mark.integration
 def test_bytesio_output_returns_bytes() -> None:
     """write_pmtiles writes a non-empty byte stream to a BytesIO."""
     buf = io.BytesIO()
-    _write_ignore({"lyr": _points_gdf()}, buf)
+    _write_safe({"lyr": _points_gdf()}, buf)
     assert buf.tell() > 0
 
 
@@ -686,7 +786,7 @@ def test_datetime_stored_as_iso_string(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "datetime.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     values = [feat.GetField("ts") for feat in lyr if feat.GetField("ts") is not None]
@@ -714,7 +814,7 @@ def test_numpy_scalar_properties(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "numpy.pmtiles"
-    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     ni_vals = {feat.GetField("ni") for feat in lyr if feat.GetField("ni") is not None}
@@ -741,7 +841,7 @@ def test_polygon_layer(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "poly.pmtiles"
-    _write_ignore({"polys": polys}, out, min_zoom=0, max_zoom=4)
+    _write_safe({"polys": polys}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     assert ds is not None
     lyr = ds.GetLayerByIndex(0)
@@ -760,7 +860,7 @@ def test_simplification_option(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "simplif.pmtiles"
-    _write_ignore({"lyr": _points_gdf()}, out, simplification=2.0)
+    _write_safe({"lyr": _points_gdf()}, out, simplification=2.0)
     assert out.exists()
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     assert ds is not None
@@ -823,7 +923,7 @@ def test_unsupported_property_type_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError):
-        write_pmtiles({"lyr": gdf}, io.BytesIO(), on_overflow="ignore")
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
 
 
 @pytest.mark.unit

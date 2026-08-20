@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 
 class WritePMTilesError(Exception):
     """Base class for all geodataframe_to_pmtiles errors."""
@@ -23,17 +26,45 @@ class UnsupportedPropertyTypeError(WritePMTilesError):
     """Raised when a column has a value that cannot be encoded as an MVT property."""
 
 
-class TileOverflowError(WritePMTilesError):
-    """Raised when ``on_overflow='error'`` and tile-level data loss cannot be ruled out.
+@dataclass(frozen=True)
+class TileLimitViolation:
+    """A GDAL MVT tile-limit diagnostic captured while writing an archive.
 
-    The GDAL PMTiles driver silently drops features when a tile exceeds its
-    fixed per-tile caps: ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``
-    (spike-validated: 200,001 z0 features preserved in 630,430 bytes).
-    Setting ``MAX_FEATURES=0`` does *not* disable the limit — GDAL clamps it
-    to its internal minimum.  The driver provides no post-write signal when a
-    drop occurs.
-
-    When ``on_overflow='error'``, this exception is raised before any data is
-    written so callers can explicitly acknowledge the limitation by switching to
-    ``on_overflow='warn'`` or ``on_overflow='ignore'``.
+    ``requested`` is the configured limit passed to GDAL.
+    ``observed`` is the value parsed from GDAL's diagnostic text.
     """
+
+    limit: Literal["MAX_FEATURES", "MAX_SIZE"]
+    requested: int
+    observed: int
+    tile: tuple[int, int, int] | None
+
+
+class TileOverflowError(WritePMTilesError):
+    """Raised when GDAL reports a tile limit that can lose data or precision.
+
+    The archive is discarded before the caller's destination is changed.  The
+    ``violations`` attribute gives the limit, configured value, observed
+    value, and tile coordinate reported by GDAL.
+    """
+
+    def __init__(self, violations: tuple[TileLimitViolation, ...]) -> None:
+        self.violations = violations
+        details = "; ".join(
+            (
+                f"{violation.limit}={violation.requested:,}, "
+                f"observed={violation.observed:,}"
+                + (
+                    f" at {violation.tile[0]}/{violation.tile[1]}/{violation.tile[2]}"
+                    if violation.tile is not None
+                    else ""
+                )
+            )
+            for violation in violations
+        )
+        super().__init__(
+            "GDAL reported a PMTiles tile limit that can drop features or reduce "
+            f"geometry precision ({details}). The destination was not changed. "
+            "Reduce density, split the data, or explicitly use "
+            "on_overflow='unsafe' only after accepting this risk."
+        )

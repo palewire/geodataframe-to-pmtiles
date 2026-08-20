@@ -6,6 +6,7 @@ from geodataframe_to_pmtiles._writer import write_pmtiles
 from geodataframe_to_pmtiles.exceptions import (
     EmptyLayerError,
     MissingCRSError,
+    TileLimitViolation,
     TileOverflowError,
     UnsupportedCRSError,
     UnsupportedPropertyTypeError,
@@ -15,6 +16,7 @@ from geodataframe_to_pmtiles.exceptions import (
 __all__ = [
     "EmptyLayerError",
     "MissingCRSError",
+    "TileLimitViolation",
     "TileOverflowError",
     "UnsupportedCRSError",
     "UnsupportedPropertyTypeError",
