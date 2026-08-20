@@ -1,0 +1,10 @@
+{
+  "source": "synthetic",
+  "description": "Synthetic boundary-condition points for Web Mercator latitude limit testing.  Points are placed at the exact limit (WEB_MERCATOR_LAT_LIMIT = 85.05112877980659\u00b0), 0.001\u00b0 inside, 0.001\u00b0 outside, and at the poles (\u00b190\u00b0), plus antimeridian points at \u00b1180\u00b0 longitude and near-corner points at (\u00b1179.999\u00b0, \u00b184.999\u00b0).  Features labelled *_outside and *_deep_outside lie entirely outside the Web Mercator tile extent and are expected to be excluded from the archive with a UserWarning.",
+  "license": "Public domain / synthetic",
+  "lat_limit": 85.05112877980659,
+  "total_input_features": 12,
+  "expected_within_bounds": 8,
+  "expected_out_of_bounds": 4,
+  "geojson_sha256": "5c00a28426a4ff1e7313c9f501cefed72dcbadf200c0513abb20c8be07ae55cf"
+}

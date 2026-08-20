@@ -1,0 +1,10 @@
+{
+  "source": "synthetic",
+  "description": "Synthetic boundary-condition polygons for Web Mercator coverage testing.  Includes polygons entirely within bounds, partially crossing the north and south limits, entirely outside bounds, and a split MultiPolygon spanning the antimeridian.  Features labelled 'dropped' lie entirely outside the Web Mercator extent and trigger a UserWarning.  Features labelled 'clipped' are passed to GDAL which clips them to the tile boundary internally.",
+  "license": "Public domain / synthetic",
+  "lat_limit": 85.05112877980659,
+  "total_input_features": 6,
+  "expected_included_or_clipped": 4,
+  "expected_dropped": 2,
+  "geojson_sha256": "ca431ada4f1d0d07dd96cad34a3853d23e46b391e6cdf6d97a94ec208f4d7f06"
+}

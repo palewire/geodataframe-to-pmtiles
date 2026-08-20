@@ -35,6 +35,69 @@ def read_pmtiles_archive(
     return header, metadata, decode(tile)
 
 
+def read_pmtiles_bytes(
+    data: bytes,
+    *,
+    z: int,
+    x: int,
+    y: int,
+) -> dict[str, Any] | None:
+    """Decode a single tile from in-memory PMTiles bytes.
+
+    Returns the decoded layer dict, or ``None`` if the tile is absent.
+    """
+    from pmtiles.reader import MemorySource
+
+    reader = Reader(MemorySource(data))
+    header = reader.header()
+    tile = reader.get(z, x, y)
+    if tile is None:
+        return None
+    if header["tile_compression"].name.lower() == "gzip":
+        tile = gzip.decompress(tile)
+    return decode(tile)
+
+
+def count_features_in_tile(
+    data: bytes,
+    layer_name: str,
+    *,
+    z: int,
+    x: int,
+    y: int,
+) -> int:
+    """Return the number of decoded features for *layer_name* in tile z/x/y."""
+    layers = read_pmtiles_bytes(data, z=z, x=x, y=y)
+    if layers is None:
+        return 0
+    return len(layers.get(layer_name, {}).get("features", []))
+
+
+def count_features_across_zoom(
+    data: bytes,
+    layer_name: str,
+    *,
+    zoom: int,
+) -> int:
+    """Return the total decoded feature count for *layer_name* across all tiles at *zoom*."""
+    from pmtiles.reader import MemorySource
+
+    reader = Reader(MemorySource(data))
+    header = reader.header()
+    total = 0
+    n_tiles = 2**zoom
+    for x in range(n_tiles):
+        for y in range(n_tiles):
+            tile = reader.get(zoom, x, y)
+            if tile is None:
+                continue
+            if header["tile_compression"].name.lower() == "gzip":
+                tile = gzip.decompress(tile)
+            layers = decode(tile)
+            total += len(layers.get(layer_name, {}).get("features", []))
+    return total
+
+
 def summarize_header(header: dict[str, Any]) -> dict[str, Any]:
     """Normalize the PMTiles header for golden comparisons."""
     return {

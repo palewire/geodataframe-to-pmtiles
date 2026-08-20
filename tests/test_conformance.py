@@ -1,9 +1,8 @@
 """Semantic conformance tests for real-world and Tippecanoe fixtures."""
 
-from __future__ import annotations
-
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -13,6 +12,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from shapely.geometry import Point, shape
+from shapely.ops import unary_union
 
 from geodataframe_to_pmtiles import write_pmtiles
 
@@ -101,6 +102,52 @@ def _summarize_archive(
     }
 
 
+def _decode_mvt_geometry_to_wgs84(
+    geometry: dict[str, Any],
+    *,
+    extent: int = 4096,
+):
+    """Convert a decoded MVT geometry from tile coordinates to EPSG:4326.
+
+    ``mapbox-vector-tile`` flips MVT's screen-oriented y axis by default, so
+    its decoded y coordinates increase northward.
+    """
+
+    def _convert(coords: object) -> object:
+        if coords and isinstance(coords[0], (int, float)):
+            x = float(coords[0])
+            y = float(coords[1])
+            lon = x / extent * 360.0 - 180.0
+            lat = math.degrees(math.atan(math.sinh(math.pi * (2 * y / extent - 1))))
+            return [lon, lat]
+        return [_convert(part) for part in coords]
+
+    return shape(
+        {"type": geometry["type"], "coordinates": _convert(geometry["coordinates"])}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("coordinates", "expected_latitude"),
+    [
+        ([2048, 0], -85.0511287798066),
+        ([2048, 2048], 0),
+        ([2048, 4096], 85.0511287798066),
+    ],
+)
+def test_decode_mvt_geometry_uses_decoder_y_axis(
+    coordinates: list[int], expected_latitude: float
+) -> None:
+    """Decoded MVT y coordinates increase from the south to the north."""
+    decoded = _decode_mvt_geometry_to_wgs84(
+        {"type": "Point", "coordinates": coordinates}
+    )
+
+    assert decoded.x == pytest.approx(0)
+    assert decoded.y == pytest.approx(expected_latitude)
+
+
 @pytest.mark.integration
 def test_climate_fixture_preserves_semantics(tmp_path: Path) -> None:
     """The real-world ERA5 fixture keeps its provenance, schema, and holes."""
@@ -141,6 +188,28 @@ def test_climate_fixture_preserves_semantics(tmp_path: Path) -> None:
     }
 
     assert summary == expected
+
+    source_union = unary_union(gdf.geometry)
+    decoded_union = unary_union(
+        [_decode_mvt_geometry_to_wgs84(feature["geometry"]) for feature in features]
+    )
+    assert decoded_union.bounds == pytest.approx(source_union.bounds, abs=0.05)
+    assert decoded_union.area == pytest.approx(source_union.area, rel=0.01)
+
+    representative_queries = [
+        Point(-9, 36),
+        Point(-5, 40),
+        Point(0, 45),
+        Point(10, 50),
+        Point(20, 55),
+        Point(29, 59),
+        Point(-11, 40),
+        Point(0, 34),
+        Point(31, 50),
+        Point(0, 61),
+    ]
+    for query in representative_queries:
+        assert decoded_union.covers(query) == source_union.covers(query)
 
 
 @pytest.mark.integration

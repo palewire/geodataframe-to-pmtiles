@@ -1,0 +1,235 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "within_bounds",
+        "expected": "included"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10,
+              40
+            ],
+            [
+              20,
+              40
+            ],
+            [
+              20,
+              50
+            ],
+            [
+              10,
+              50
+            ],
+            [
+              10,
+              40
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "crosses_north_limit",
+        "expected": "clipped"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10,
+              80
+            ],
+            [
+              20,
+              80
+            ],
+            [
+              20,
+              88
+            ],
+            [
+              10,
+              88
+            ],
+            [
+              10,
+              80
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "crosses_south_limit",
+        "expected": "clipped"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10,
+              -88
+            ],
+            [
+              20,
+              -88
+            ],
+            [
+              20,
+              -80
+            ],
+            [
+              10,
+              -80
+            ],
+            [
+              10,
+              -88
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "entirely_outside_north",
+        "expected": "dropped"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10,
+              87
+            ],
+            [
+              20,
+              87
+            ],
+            [
+              20,
+              90
+            ],
+            [
+              10,
+              90
+            ],
+            [
+              10,
+              87
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "entirely_outside_south",
+        "expected": "dropped"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10,
+              -90
+            ],
+            [
+              20,
+              -90
+            ],
+            [
+              20,
+              -87
+            ],
+            [
+              10,
+              -87
+            ],
+            [
+              10,
+              -90
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "label": "antimeridian_multipolygon",
+        "expected": "included"
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [
+                170,
+                -5
+              ],
+              [
+                180,
+                -5
+              ],
+              [
+                180,
+                5
+              ],
+              [
+                170,
+                5
+              ],
+              [
+                170,
+                -5
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                -180,
+                -5
+              ],
+              [
+                -170,
+                -5
+              ],
+              [
+                -170,
+                5
+              ],
+              [
+                -180,
+                5
+              ],
+              [
+                -180,
+                -5
+              ]
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

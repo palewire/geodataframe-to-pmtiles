@@ -59,6 +59,49 @@ changed.
 accept GDAL's lossy behavior. It emits a warning and must not be used for data
 where every feature or coordinate matters.
 
+.. rubric:: Web Mercator boundary semantics
+
+The PMTiles/MVT tile scheme uses Web Mercator (EPSG:3857), which maps only
+the latitude range **±85.05112877980659°** (the Google/OSM slippy-map limit,
+referred to as ``WEB_MERCATOR_LAT_LIMIT`` in this module).  ``write_pmtiles``
+reprojects every input layer to EPSG:4326 before passing it to the GDAL PMTiles
+driver.
+
+**Input-side boundary handling (performed by this library before GDAL):**
+
+1. Any geometry that does not intersect the Web Mercator latitude extent is
+   detected before being passed to GDAL.  A :class:`UserWarning` is emitted
+   (once per layer, not once per feature) and the feature is skipped.  Without
+   this check GDAL would discard such features silently.
+
+2. Geometries that *partially* overlap the extent (e.g. a polygon that crosses
+   85° N) are passed to GDAL.  GDAL clips them to the tile boundary
+   internally using its ``EXTENT``/``BUFFER`` tile coordinate system.
+
+**Longitude:** ±180° is supported.  A ``MultiPolygon`` manually split at the
+antimeridian (one part from 170° to 180° and another from -180° to -170°) is
+the correct representation for antimeridian-crossing features; GDAL places each
+part in the appropriate tile column.
+
+**GDAL PMTiles driver tile options** (fixed in this implementation):
+
+* ``EXTENT = 4096`` — tile coordinate range (MVT standard).
+* ``BUFFER = 80`` — extra tile units included beyond the tile edge; a feature
+  is included in a tile if it falls within ``EXTENT + BUFFER`` of the tile
+  origin.  Features beyond the Web Mercator latitude limit (|lat| >
+  ~85.051°) are excluded before writing; ``write_pmtiles`` warns once for each
+  affected layer and raises ``EmptyLayerError`` if all features in a layer
+  are outside that bound.  Tippecanoe uses a larger default buffer (approx
+  5% of tile vs GDAL's approx 2%), which is why z-7/z-8 decoded feature
+  counts can differ by 1-2 between backends without any data loss.
+
+**ERA5 z-0 fragment count difference:** 329 ERA5 polygons (within 35-60 degrees N)
+written with this library decode to 297 features at z-0, while the same source
+data passed through Tippecanoe decodes to 256 (Celsius) / 254 (Fahrenheit)
+features.  The difference is purely a tile-clipping artifact — both backends
+produce equivalent geographic union coverage at z-0.  The ERA5 data is well
+within the Mercator extent; no features are lost.
+
 .. rubric:: Attribution
 
 An optional ``attribution`` string is stored in the archive's TileJSON metadata
@@ -127,6 +170,7 @@ import json
 import math
 import tempfile
 import uuid
+import warnings
 from importlib import import_module
 from io import BytesIO, IOBase
 from pathlib import Path
@@ -166,6 +210,45 @@ _MAX_FEATURES: int = 300_000
 _MAX_SIZE: int = 10_000_000
 
 PropertyKind = Literal["string", "int", "float", "bool"]
+
+# ---------------------------------------------------------------------------
+# Web Mercator boundary constants
+# ---------------------------------------------------------------------------
+
+#: Maximum latitude supported by the Web Mercator tile scheme (EPSG:3857 /
+#: Google/OSM slippy-map convention).  Features at ``|lat| > WEB_MERCATOR_LAT_LIMIT``
+#: lie outside the tile space and are dropped by the GDAL PMTiles driver.
+WEB_MERCATOR_LAT_LIMIT: float = 85.05112877980659
+
+# Warning emitted once per layer when out-of-bounds features are detected.
+_OUT_OF_BOUNDS_WARNING = (
+    "Layer '{layer_name}': {count} feature(s) lie entirely outside the Web "
+    f"Mercator latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) and will not appear "
+    "in the archive.  The GDAL PMTiles driver silently drops such features; "
+    "this library detects and reports them up-front.  Clip or drop the affected "
+    "geometries so they fall within ±85.05° latitude before calling write_pmtiles."
+)
+
+
+def _is_outside_mercator_extent(geom: Any) -> bool:
+    """Return True if *geom* lies entirely outside the Web Mercator latitude extent.
+
+    Bounding boxes identify the common cases quickly. A geometry intersection
+    check handles multipart geometries with components on opposite sides of the
+    valid latitude range. Geometries that intersect the boundary are passed to
+    GDAL, which clips them to the tile boundary internally.
+    """
+    minx, miny, maxx, maxy = map(float, geom.bounds)
+    if maxy < -WEB_MERCATOR_LAT_LIMIT or miny > WEB_MERCATOR_LAT_LIMIT:
+        return True
+    if miny >= -WEB_MERCATOR_LAT_LIMIT and maxy <= WEB_MERCATOR_LAT_LIMIT:
+        return False
+
+    from shapely.geometry import box
+
+    return not geom.intersects(
+        box(minx - 1.0, -WEB_MERCATOR_LAT_LIMIT, maxx + 1.0, WEB_MERCATOR_LAT_LIMIT)
+    )
 
 
 def _load_gdal_modules() -> tuple[Any, Any, Any]:
@@ -675,6 +758,47 @@ def write_pmtiles(
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
         field_kinds_by_layer[layer_name] = field_kinds
 
+    # ------------------------------------------------------------------
+    # Web Mercator bounds pre-check
+    # ------------------------------------------------------------------
+    # Count features entirely outside the Web Mercator latitude extent for
+    # each layer.  GDAL silently drops them; we warn up-front and, if the
+    # whole layer would be empty, raise EmptyLayerError with a clear message
+    # instead of letting GDAL fail with "Invalid bounds".
+    valid_row_indices_by_layer: dict[str, list[int]] = {}
+    for layer_name, gdf in wgs84_layers.items():
+        out_of_bounds = 0
+        valid_row_indices: list[int] = []
+        for row_index, geom in enumerate(gdf.geometry):
+            if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
+                continue
+            if _is_outside_mercator_extent(geom):
+                out_of_bounds += 1
+                continue
+            valid_row_indices.append(row_index)
+        valid_row_indices_by_layer[layer_name] = valid_row_indices
+        if out_of_bounds > 0:
+            warnings.warn(
+                _OUT_OF_BOUNDS_WARNING.format(
+                    layer_name=layer_name,
+                    count=out_of_bounds,
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        if not valid_row_indices:
+            msg = (
+                f"Layer '{layer_name}' has no valid features (non-null, non-empty, "
+                f"in-bounds) within the Web Mercator latitude extent "
+                f"(±{WEB_MERCATOR_LAT_LIMIT}°)"
+            )
+            if out_of_bounds:
+                msg += f" after excluding {out_of_bounds} out-of-bounds feature(s)"
+            msg += (
+                ". Clip or drop the affected geometries before calling write_pmtiles."
+            )
+            raise EmptyLayerError(msg)
+
     # Import GDAL only after the pure-Python validation has succeeded.
     gdal, ogr, osr = _load_gdal_modules()
 
@@ -723,6 +847,7 @@ def write_pmtiles(
                         json_field_names,
                         ogr,
                         field_kinds_by_layer[layer_name],
+                        valid_row_indices_by_layer[layer_name],
                     )
 
                 ds.FlushCache()
@@ -737,8 +862,6 @@ def write_pmtiles(
         if violations and on_overflow == "error":
             raise TileOverflowError(violations)
         if violations:
-            import warnings
-
             warnings.warn(
                 "on_overflow='unsafe' allowed GDAL to exceed a tile limit; "
                 "features may be missing or geometry precision may be reduced.",
@@ -860,17 +983,16 @@ def _write_layer(
     json_field_names: frozenset[str] | None,
     ogr: Any,
     field_kinds: dict[str, PropertyKind],
+    valid_row_indices: list[int],
 ) -> None:
     """Create an OGR layer inside *ds* and populate it from *gdf*.
 
     Performance notes
     -----------------
-    Geometries are batch-converted to WKB via :func:`shapely.to_wkb` before
-    the feature loop.  This avoids a per-row Python-level text roundtrip
-    (``geom.wkt`` string serialisation followed by ``CreateGeometryFromWkt``
-    parsing).  The valid-geometry mask (empty / missing filter) is also
-    computed in a single vectorised call before the loop, removing per-row
-    ``is_empty`` attribute access.
+    Geometries accepted by the boundary pre-check are batch-converted to WKB
+    via :func:`shapely.to_wkb` before the feature loop. This avoids a per-row
+    Python-level text roundtrip (``geom.wkt`` string serialisation followed by
+    ``CreateGeometryFromWkt`` parsing).
 
     Property columns are pre-normalised to Python-native lists before the
     feature loop.  For ``int``, ``float``, and ``bool`` kinds,
@@ -912,12 +1034,10 @@ def _write_layer(
     layer_defn = lyr.GetLayerDefn()
 
     # ------------------------------------------------------------------
-    # Batch-compute valid geometry mask and WKB bytes.
-    # Vectorised shapely calls replace per-row geom.wkt + WKT parsing.
+    # Batch-convert the rows accepted by the boundary pre-check to WKB.
     # ------------------------------------------------------------------
     geom_arr = gdf.geometry.values  # geopandas GeometryArray (shapely-backed)
-    skip_mask = shapely.is_missing(geom_arr) | shapely.is_empty(geom_arr)
-    valid_idx = np.where(~skip_mask)[0]
+    valid_idx = np.asarray(valid_row_indices, dtype=int)
     # to_wkb on a filtered numpy array → ndarray of bytes objects
     wkb_arr: Any = shapely.to_wkb(geom_arr[valid_idx])
 
