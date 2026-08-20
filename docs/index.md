@@ -43,7 +43,7 @@ write_pmtiles(
     name="my map",
     description="Points and lines layer",
     attribution="© OpenStreetMap contributors",  # optional TileJSON attribution
-    on_overflow="unsafe",  # explicit opt-out if you accept tile-level risk
+    on_overflow="error",  # default: reject reported tile-level data loss
 )
 ```
 
@@ -159,3 +159,60 @@ alter reported conditions.
   This is not data loss.
 * **No simplification by default.**  Pass `simplification=<float>` to enable GDAL
   geometry simplification (tolerance in tile-coordinate units, 4096 per tile).
+
+## Performance
+
+### Running the benchmark
+
+A deterministic benchmark is included in `benchmarks/bench_write_pmtiles.py`.
+It generates reproducible global point workloads at multiple scales and
+measures wall time, peak memory, tile count, and archive size for both `Path`
+and `BytesIO` output modes.
+
+```sh
+# Install the test group (includes the pmtiles Python reader for tile-count reporting)
+uv sync --group test --group test-extras --locked
+
+# Full suite (1 k, 10 k, 50 k, 100 k features)
+python benchmarks/bench_write_pmtiles.py
+
+# Fast subset (1 k and 10 k only)
+python benchmarks/bench_write_pmtiles.py --fast
+```
+
+A reference profile and before/after comparison are in
+`benchmarks/profile_report.md`.
+
+### Write-path bottleneck
+
+The write path iterates features one at a time via OGR's SWIG layer
+(`Layer.CreateFeature`), which is the dominant and irreducible per-feature
+cost at ~0.17 ms/feature.  The surrounding Python overhead (WKB conversion,
+property normalisation, emptiness filtering) has been minimised with
+vectorised batch operations.
+
+### Global layers and parallel workers
+
+For large layers (> 500 k features), the per-feature GDAL cost dominates.
+Practical guidance:
+
+* **Split by zoom range** — write separate archives for coarse (z0–5) and
+  fine (z6–12) zoom ranges and merge them client-side or at serving time.
+  Coarser zoom ranges produce far fewer tiles and complete much faster.
+
+* **Split by region** — partition a global dataset into regional shards
+  (e.g. one GeoDataFrame per continent), write each shard to its own
+  `BytesIO` buffer, and merge the raw bytes with a tool such as
+  `pmtiles merge`.
+
+* **Parallel workers** — `write_pmtiles` is stateless and can be called
+  in separate processes (not threads; GDAL/GIL contention affects threads)
+  via `concurrent.futures.ProcessPoolExecutor`.  Each worker writes to its
+  own `BytesIO` buffer.  Tile ranges must not overlap across workers, or
+  features will be double-written.
+
+* **Memory** — peak Python-level memory tracks roughly with the number of
+  input features × (WKB bytes per feature + pre-normalised column lists).
+  For point layers, WKB is 21 bytes/feature.  A 1 M-feature point layer
+  with three float64 columns needs roughly 100–150 MB of Python-side
+  allocations before GDAL's own vsimem and MVT tile buffers.

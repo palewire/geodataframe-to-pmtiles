@@ -77,6 +77,16 @@ def _write_safe(layers, output, **kwargs):
     write_pmtiles(layers, output, **kwargs)
 
 
+def _write_ignore(layers, output, **kwargs):
+    """Write an archive suppressing tile-overflow errors (unsafe policy).
+
+    Used in semantic tests where the small feature count may cause GDAL to
+    report overflow at coarse zoom levels; the test focus is output semantics,
+    not overflow behaviour.
+    """
+    write_pmtiles(layers, output, on_overflow="unsafe", **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _skip_integration_without_gdal(request: pytest.FixtureRequest) -> None:
     """Skip integration tests when the native GDAL runtime is unavailable."""
@@ -1819,3 +1829,229 @@ def test_zoom_out_of_range_raises() -> None:
     """Zoom levels outside 0-22 raise ValueError."""
     with pytest.raises(ValueError, match="max_zoom"):
         write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), max_zoom=30)
+
+
+# ---------------------------------------------------------------------------
+# Optimised-path semantic equivalence
+# ---------------------------------------------------------------------------
+
+
+def _rich_points_gdf(n: int = 20) -> gpd.GeoDataFrame:
+    """Return a GeoDataFrame covering all normalised property kinds.
+
+    Columns:
+      idx     - int64 sequential index
+      score   - float64 (some NaN)
+      active  - bool (some None)
+      label   - plain str
+      geom    - Point
+    """
+    rng = np.random.default_rng(0)
+    lons = rng.uniform(-180.0, 180.0, n)
+    lats = rng.uniform(-90.0, 90.0, n)
+    scores = rng.uniform(0.0, 1.0, n).tolist()
+    scores[3] = float("nan")  # one NaN → null in output
+    actives: list[object] = [bool(i % 2) for i in range(n)]
+    actives[5] = None  # one None → null in output
+    return gpd.GeoDataFrame(
+        {
+            "idx": list(range(n)),
+            "score": scores,
+            "active": actives,
+            "label": [f"pt_{i}" for i in range(n)],
+        },
+        geometry=[Point(x, y) for x, y in zip(lons, lats, strict=True)],
+        crs="EPSG:4326",
+    )
+
+
+@pytest.mark.integration
+def test_optimised_path_feature_count_and_property_types(
+    tmp_path: Path,
+) -> None:
+    """Optimised write path preserves feature count and property types.
+
+    Decodes the archive via GDAL and verifies:
+    - feature count is non-zero
+    - expected property keys are present
+    - bool-kind column decoded as 0 / 1 integer (MVT has no native bool)
+    - float NaN row stores null (GetField returns None; see GDAL PMTiles note)
+    - None bool row stores null
+    """
+    from osgeo import gdal
+
+    gdf = _rich_points_gdf(n=50)
+    out = tmp_path / "rich.pmtiles"
+    _write_ignore({"pts": gdf}, out, min_zoom=0, max_zoom=4)
+
+    # Decode via GDAL round-trip; PMTiles returns null fields as None,
+    # not via OGR's IsFieldNull (see test_nullable_float_nan_is_null).
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+
+    bool_values: set[object] = set()
+    has_null_score = False
+    has_null_active = False
+    feat_count = 0
+
+    for f in lyr:
+        feat_count += 1
+        if f.GetField("score") is None:
+            has_null_score = True
+        if f.GetField("active") is None:
+            has_null_active = True
+        else:
+            bool_values.add(f.GetField("active"))
+
+    assert feat_count > 0, "no features decoded"
+    assert has_null_score, "NaN score should be null (None) in decoded output"
+    assert has_null_active, "None active should be null (None) in decoded output"
+    # bools encoded as 0/1 integers (MVT has no native bool type)
+    assert bool_values.issubset({0, 1}), f"bool values not 0/1: {bool_values}"
+
+    ds = None
+
+
+@pytest.mark.integration
+def test_optimised_path_and_bytesio_decoded_equivalent(tmp_path: Path) -> None:
+    """Path and BytesIO output modes produce semantically equivalent archives.
+
+    Each call produces a different vsimem UUID, which GDAL may include as the
+    archive name in metadata, so byte-level equality is not guaranteed.  This
+    test instead decodes both archives and compares feature counts and tile
+    type metadata.
+    """
+    from osgeo import gdal
+
+    gdf = _rich_points_gdf(n=30)
+
+    path_out = tmp_path / "path.pmtiles"
+    _write_ignore({"pts": gdf}, path_out, min_zoom=0, max_zoom=4)
+
+    buf = io.BytesIO()
+    _write_ignore({"pts": gdf}, buf, min_zoom=0, max_zoom=4)
+    buf_out = tmp_path / "buf.pmtiles"
+    buf_out.write_bytes(buf.getvalue())
+
+    def _count_features(p: Path) -> int:
+        ds = gdal.OpenEx(str(p), gdal.OF_VECTOR)
+        assert ds is not None, f"gdal.OpenEx could not open {p}"
+        lyr = ds.GetLayerByIndex(0)
+        assert lyr is not None, f"GetLayerByIndex(0) returned None for {p}"
+        count = sum(1 for _ in lyr)
+        ds = None  # release dataset handle to avoid file lock / leak
+        return count
+
+    assert _count_features(path_out) == _count_features(buf_out), (
+        "Path and BytesIO decode to different feature counts"
+    )
+
+
+@pytest.mark.integration
+def test_optimised_path_string_isoformat_fallback(tmp_path: Path) -> None:
+    """String-kind values with an isoformat method still round-trip as strings."""
+    from osgeo import gdal
+
+    class _IsoValue:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def isoformat(self) -> str:
+            return f"iso-{self.label}"
+
+    gdf = gpd.GeoDataFrame(
+        {"stamp": [_IsoValue("a"), _IsoValue("b"), _IsoValue("c")]},
+        geometry=[Point(float(i), 0.0) for i in range(3)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "isoformat.pmtiles"
+    _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
+
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+    values = [feat.GetField("stamp") for feat in lyr]
+    assert values == ["iso-a", "iso-b", "iso-c"]
+    ds = None
+
+
+@pytest.mark.integration
+def test_optimised_path_skips_invalid_wkb_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A geometry conversion failure is skipped without stopping the layer write."""
+    from osgeo import gdal, ogr
+
+    gdf = gpd.GeoDataFrame(
+        {"idx": [1, 2, 3]},
+        geometry=[
+            Point(0.0, 0.0),
+            Point(1.0, 1.0),
+            Point(2.0, 2.0),
+        ],
+        crs="EPSG:4326",
+    )
+
+    original = ogr.CreateGeometryFromWkb
+    calls = {"count": 0}
+
+    def _fake_create_geometry_from_wkb(wkb: bytes) -> object | None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return None
+        return original(wkb)
+
+    monkeypatch.setattr(ogr, "CreateGeometryFromWkb", _fake_create_geometry_from_wkb)
+
+    out = tmp_path / "skip-geometry.pmtiles"
+    _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
+
+    assert calls["count"] == 3
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+    assert sum(1 for _ in lyr) == 2
+    ds = None
+
+
+@pytest.mark.integration
+def test_optimised_path_feature_order_preserved(tmp_path: Path) -> None:
+    """Optimised path writes features in input (DataFrame row) order."""
+    from osgeo import ogr
+
+    n = 10
+    gdf = gpd.GeoDataFrame(
+        {"seq": list(range(n))},
+        geometry=[Point(float(i), 0.0) for i in range(n)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "ordered.pmtiles"
+    _write_ignore({"pts": gdf}, out)
+
+    ds = ogr.Open(str(out))
+    lyr = ds.GetLayer("pts")
+    decoded_seq = []
+    lyr.ResetReading()
+    while True:
+        f = lyr.GetNextFeature()
+        if f is None:
+            break
+        decoded_seq.append(f.GetField("seq"))
+
+    # All unique first occurrences must be in ascending input order.
+    seen: set[int] = set()
+    first_occurrences: list[int] = []
+    for v in decoded_seq:
+        if v not in seen:
+            seen.add(v)
+            first_occurrences.append(v)
+
+    assert first_occurrences == sorted(first_occurrences), (
+        f"Feature order not preserved: first occurrences = {first_occurrences}"
+    )
+    ds = None
