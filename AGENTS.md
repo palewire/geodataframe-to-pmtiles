@@ -60,12 +60,11 @@ write_pmtiles(
 
 ## GDAL Dependency
 
-`gdal` is an sdist-only PyPI package that must be compiled against the system
-GDAL development headers.  The installed `gdal` PyPI version must match the
-system GDAL version exactly.
-
-- macOS: `brew install gdal`, then `pip install gdal==<version>`
-- Debian/Ubuntu: `apt install libgdal-dev`, then `pip install gdal==<version>`
+`write_pmtiles()` needs a native GDAL runtime with the PMTiles driver
+available, but the package itself imports without GDAL.  The CI workflow
+installs GDAL from conda-forge and runs `uv` against that active environment.
+For local development, install GDAL separately via conda-forge, Homebrew, or
+your system package manager before running the archive-writing tests.
 
 ## Known Design Limitations
 

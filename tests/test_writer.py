@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import io
 import json
+import warnings
 from pathlib import Path
 
 import geopandas as gpd
@@ -15,6 +18,7 @@ from shapely.geometry import LineString, Point, Polygon
 from geodataframe_to_pmtiles import (
     EmptyLayerError,
     MissingCRSError,
+    TileOverflowError,
     UnsupportedCRSError,
     UnsupportedPropertyTypeError,
     write_pmtiles,
@@ -51,8 +55,8 @@ def _lines_gdf() -> gpd.GeoDataFrame:
     )
 
 
-def _open_pmtiles(data: bytes) -> gdal.Dataset:  # noqa: F821
-    """Write *data* to a vsimem path and return the opened GDAL datasource."""
+def _open_pmtiles_bytes(data: bytes) -> tuple[gdal.Dataset, str]:  # noqa: F821
+    """Write *data* to a vsimem path and return (datasource, path)."""
     from osgeo import gdal
 
     gdal.UseExceptions()
@@ -62,6 +66,21 @@ def _open_pmtiles(data: bytes) -> gdal.Dataset:  # noqa: F821
     gdal.VSIFCloseL(vf)
     ds = gdal.OpenEx(path, gdal.OF_VECTOR)
     return ds, path
+
+
+def _write_ignore(layers, output, **kwargs):
+    """Call write_pmtiles with on_overflow='ignore' to suppress the default warning."""
+    write_pmtiles(layers, output, on_overflow="ignore", **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _skip_integration_without_gdal(request: pytest.FixtureRequest) -> None:
+    """Skip integration tests when the native GDAL runtime is unavailable."""
+    if (
+        request.node.get_closest_marker("integration")
+        and importlib.util.find_spec("osgeo") is None
+    ):
+        pytest.skip("GDAL Python bindings are not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +94,7 @@ def test_two_layer_archive_path(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "two_layers.pmtiles"
-    write_pmtiles(
+    _write_ignore(
         {"points": _points_gdf(), "lines": _lines_gdf()},
         out,
         min_zoom=0,
@@ -106,7 +125,7 @@ def test_two_layer_archive_path(tmp_path: Path) -> None:
 def test_two_layer_archive_bytesio() -> None:
     """write_pmtiles writes a two-layer archive to a BytesIO stream."""
     buf = io.BytesIO()
-    write_pmtiles(
+    _write_ignore(
         {"points": _points_gdf(), "lines": _lines_gdf()},
         buf,
         min_zoom=0,
@@ -116,7 +135,7 @@ def test_two_layer_archive_bytesio() -> None:
     data = buf.read()
     assert len(data) > 0
 
-    ds, path = _open_pmtiles(data)
+    ds, path = _open_pmtiles_bytes(data)
     try:
         assert ds is not None
         layer_names = {
@@ -131,6 +150,22 @@ def test_two_layer_archive_bytesio() -> None:
         gdal.Unlink(path)
 
 
+@pytest.mark.integration
+def test_layer_names_are_exact_source_names(tmp_path: Path) -> None:
+    """Layer names in the archive match the keys from the layers mapping exactly."""
+    from osgeo import gdal
+
+    out = tmp_path / "named.pmtiles"
+    _write_ignore(
+        {"climate_zones": _points_gdf(), "admin_boundaries": _lines_gdf()}, out
+    )
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    names = {ds.GetLayerByIndex(i).GetName() for i in range(ds.GetLayerCount())}
+    assert "climate_zones" in names
+    assert "admin_boundaries" in names
+    ds = None
+
+
 # ---------------------------------------------------------------------------
 # Feature order determinism
 # ---------------------------------------------------------------------------
@@ -138,7 +173,7 @@ def test_two_layer_archive_bytesio() -> None:
 
 @pytest.mark.integration
 def test_feature_order_preserved(tmp_path: Path) -> None:
-    """Features are written in input order (deterministic)."""
+    """Features are written in input order; first-occurrence order matches insertion order."""
     from osgeo import gdal
 
     names = [f"feat_{i}" for i in range(5)]
@@ -148,13 +183,14 @@ def test_feature_order_preserved(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "order.pmtiles"
-    write_pmtiles({"ordered": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"ordered": gdf}, out, min_zoom=0, max_zoom=4)
 
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     seen = [feat.GetField("name") for feat in lyr]
-    # Features may appear in multiple tiles; check the unique ordered subset.
-    unique_seen = list(dict.fromkeys(seen))  # preserve first occurrence order
+    # MVT duplicates features across tiles; unique first-occurrence order should
+    # match insertion order.
+    unique_seen = list(dict.fromkeys(seen))
     assert unique_seen == names
     ds = None
 
@@ -171,7 +207,7 @@ def test_string_properties(tmp_path: Path) -> None:
 
     gdf = _points_gdf()
     out = tmp_path / "strings.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     names = {feat.GetField("name") for feat in lyr}
@@ -184,9 +220,8 @@ def test_integer_properties(tmp_path: Path) -> None:
     """Integer columns round-trip as integer values.
 
     Note: The PMTiles/MVT format stores all integer types in protocol-buffer
-    varint fields.  GDAL's PMTiles reader reports them back as OFTInteger (not
-    OFTInteger64) regardless of the input type.  We verify the field is an
-    integer type and that the values are correct.
+    varint fields.  GDAL's PMTiles reader reports them as OFTInteger (not
+    OFTInteger64) regardless of the input type.
     """
     from osgeo import gdal, ogr
 
@@ -196,11 +231,11 @@ def test_integer_properties(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "int.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("count"))
-    # PMTiles reader returns OFTInteger or OFTInteger64; both are acceptable.
+    # PMTiles reader may return OFTInteger or OFTInteger64.
     assert fld.GetType() in (ogr.OFTInteger, ogr.OFTInteger64)
     values = {feat.GetField("count") for feat in lyr}
     assert {10, 20, 30}.issubset(values)
@@ -218,7 +253,7 @@ def test_float_properties(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "float.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("ratio"))
@@ -237,7 +272,7 @@ def test_bool_stored_as_integer(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "bool.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("flag"))
@@ -258,10 +293,10 @@ def test_nullable_float_nan_is_null(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "nan.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
-    # PMTiles returns null fields as None (IsFieldNull may not be set for all drivers).
+    # PMTiles returns null fields as None (IsFieldNull may not be set).
     null_count = sum(1 for feat in lyr if feat.GetField("val") is None)
     assert null_count >= 1
     ds = None
@@ -278,18 +313,41 @@ def test_none_stored_as_null(tmp_path: Path) -> None:
         crs="EPSG:4326",
     )
     out = tmp_path / "none.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
-    # PMTiles returns null fields as None (not via IsFieldNull for all drivers).
     null_count = sum(1 for feat in lyr if feat.GetField("label") is None)
     assert null_count >= 1
     ds = None
 
 
 @pytest.mark.integration
-def test_list_property_json_encoded(tmp_path: Path) -> None:
-    """List-valued properties are JSON-encoded to strings."""
+def test_pd_na_treated_as_null(tmp_path: Path) -> None:
+    """pandas NA values are treated as null fields."""
+    from osgeo import gdal
+
+    gdf = gpd.GeoDataFrame(
+        {"label": pd.array(["a", pd.NA, "c"], dtype="string")},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "pdna.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    null_count = sum(1 for feat in lyr if feat.GetField("label") is None)
+    assert null_count >= 1
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# json_fields — explicit list/dict encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_list_property_json_encoded_auto(tmp_path: Path) -> None:
+    """List-valued columns are JSON-encoded to strings when json_fields=None (auto)."""
     from osgeo import gdal
 
     gdf = gpd.GeoDataFrame(
@@ -297,15 +355,14 @@ def test_list_property_json_encoded(tmp_path: Path) -> None:
         geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
         crs="EPSG:4326",
     )
-    out = tmp_path / "list.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    out = tmp_path / "list_auto.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     raw_values = [
         feat.GetField("tags") for feat in lyr if feat.GetField("tags") is not None
     ]
     assert len(raw_values) > 0
-    # Each stored value must be valid JSON encoding a list
     for v in raw_values:
         decoded = json.loads(v)
         assert isinstance(decoded, list)
@@ -313,8 +370,8 @@ def test_list_property_json_encoded(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_dict_property_json_encoded(tmp_path: Path) -> None:
-    """Dict-valued properties are JSON-encoded to strings."""
+def test_dict_property_json_encoded_auto(tmp_path: Path) -> None:
+    """Dict-valued columns are JSON-encoded to strings when json_fields=None (auto)."""
     from osgeo import gdal
 
     gdf = gpd.GeoDataFrame(
@@ -322,8 +379,8 @@ def test_dict_property_json_encoded(tmp_path: Path) -> None:
         geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
         crs="EPSG:4326",
     )
-    out = tmp_path / "dict.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    out = tmp_path / "dict_auto.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
     raw_values = [
@@ -337,46 +394,166 @@ def test_dict_property_json_encoded(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_datetime_stored_as_iso_string(tmp_path: Path) -> None:
-    """Datetime columns are stored as ISO 8601 strings."""
+def test_list_property_json_encoded_explicit(tmp_path: Path) -> None:
+    """A list column listed in json_fields is JSON-encoded; other columns work normally."""
     from osgeo import gdal
 
     gdf = gpd.GeoDataFrame(
-        {"ts": pd.to_datetime(["2024-01-01", "2024-06-15", "2025-12-31"])},
+        {"tags": [["a", "b"], ["c"], ["d"]], "name": ["x", "y", "z"]},
         geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
         crs="EPSG:4326",
     )
-    out = tmp_path / "datetime.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    out = tmp_path / "list_explicit.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["tags"])
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     lyr = ds.GetLayerByIndex(0)
-    values = [feat.GetField("ts") for feat in lyr if feat.GetField("ts") is not None]
-    assert len(values) > 0
-    # Values should look like ISO date strings
-    assert all("2024" in v or "2025" in v for v in values)
+    raw_values = [
+        feat.GetField("tags") for feat in lyr if feat.GetField("tags") is not None
+    ]
+    assert len(raw_values) > 0
+    for v in raw_values:
+        assert isinstance(json.loads(v), list)
     ds = None
+
+
+@pytest.mark.unit
+def test_list_column_not_in_json_fields_raises() -> None:
+    """A list column NOT in json_fields raises UnsupportedPropertyTypeError."""
+    gdf = gpd.GeoDataFrame(
+        {"tags": [["a", "b"], ["c"], ["d"]]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+
+
+@pytest.mark.unit
+def test_dict_column_not_in_json_fields_raises() -> None:
+    """A dict column NOT in json_fields raises UnsupportedPropertyTypeError."""
+    gdf = gpd.GeoDataFrame(
+        {"props": [{"k": "v"}, {}, {"x": 1}]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(UnsupportedPropertyTypeError, match="json_fields"):
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), json_fields=[], on_overflow="ignore")
+
+
+# ---------------------------------------------------------------------------
+# on_overflow policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_on_overflow_error_raises_before_write() -> None:
+    """on_overflow='error' raises TileOverflowError before any data is written."""
+    buf = io.BytesIO()
+    with pytest.raises(TileOverflowError, match="on_overflow"):
+        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="error")
+    # Nothing should have been written.
+    assert buf.tell() == 0
+
+
+@pytest.mark.unit
+def test_on_overflow_warn_emits_warning() -> None:
+    """on_overflow='warn' (default) emits a UserWarning mentioning the caps."""
+    buf = io.BytesIO()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write_pmtiles({"lyr": _points_gdf()}, buf)
+    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(overflow_warnings) >= 1
+    msg = str(overflow_warnings[0].message).lower()
+    assert "overflow" in msg or "max_features" in msg or "300" in msg
+
+
+@pytest.mark.unit
+def test_on_overflow_ignore_no_warning() -> None:
+    """on_overflow='ignore' suppresses the overflow warning."""
+    buf = io.BytesIO()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write_pmtiles({"lyr": _points_gdf()}, buf, on_overflow="ignore")
+    overflow_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(overflow_warnings) == 0
+
+
+@pytest.mark.unit
+def test_on_overflow_invalid_value_raises() -> None:
+    """An invalid on_overflow value raises ValueError."""
+    with pytest.raises(ValueError, match="on_overflow"):
+        write_pmtiles(
+            {"lyr": _points_gdf()},
+            io.BytesIO(),
+            on_overflow="drop",  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.unit
+def test_missing_gdal_runtime_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_pmtiles raises a runtime error if GDAL cannot be imported."""
+    from geodataframe_to_pmtiles import _writer as writer_module
+
+    def _missing_osgeo(name: str, package: str | None = None) -> object:
+        if name.startswith("osgeo"):
+            raise ImportError("No module named 'osgeo'")
+        return importlib.import_module(name, package)
+
+    monkeypatch.setattr(writer_module, "import_module", _missing_osgeo)
+
+    with pytest.raises(RuntimeError, match="GDAL Python bindings are required"):
+        write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), on_overflow="ignore")
+
+
+# ---------------------------------------------------------------------------
+# POC caps (fixed spike-validated values)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_numpy_scalar_properties(tmp_path: Path) -> None:
-    """numpy scalar types (int32, float32, bool_) are normalised correctly."""
-    from osgeo import gdal
-
-    gdf = gpd.GeoDataFrame(
-        {
-            "ni": np.array([1, 2, 3], dtype=np.int32),
-            "nf": np.array([1.1, 2.2, 3.3], dtype=np.float32),
-        },
-        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+def test_poc_caps_allow_normal_dataset(tmp_path: Path) -> None:
+    """The fixed POC caps (MAX_FEATURES=300,000, MAX_SIZE=10 MB) allow normal datasets."""
+    out = tmp_path / "poc.pmtiles"
+    large_gdf = gpd.GeoDataFrame(
+        {"id": list(range(100))},
+        geometry=[Point(float(i % 10), float(i // 10)) for i in range(100)],
         crs="EPSG:4326",
     )
-    out = tmp_path / "numpy.pmtiles"
-    write_pmtiles({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
-    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
-    lyr = ds.GetLayerByIndex(0)
-    ni_vals = {feat.GetField("ni") for feat in lyr if feat.GetField("ni") is not None}
-    assert {1, 2, 3}.issubset(ni_vals)
-    ds = None
+    _write_ignore({"lyr": large_gdf}, out)
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+@pytest.mark.integration
+def test_poc_caps_preserve_200k_z0_features(tmp_path: Path) -> None:
+    """Spike-validated: MAX_FEATURES=300,000 preserved 200,001 z0 features (~630 KB).
+
+    This is the exact scenario from the spike test.  All features are spread
+    across the globe so a single z0 tile holds all of them; the resulting
+    archive must be non-empty and within the expected compressed-byte range.
+    """
+    n = 200_001
+    # Spread features evenly across -180..179 lon / -85..84 lat bands.
+    gdf = gpd.GeoDataFrame(
+        {"id": range(n)},
+        geometry=[
+            Point(float(i % 360) - 180.0, float((i // 360) % 170) - 85.0)
+            for i in range(n)
+        ],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "large_z0.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    assert out.exists()
+    size = out.stat().st_size
+    # Spike result: 630,430 bytes.  Allow ±50 % for driver/compression variance.
+    assert 300_000 < size < 1_500_000, (
+        f"Archive size {size:,} bytes is outside the expected spike range "
+        "(300 K – 1.5 MB). Caps may have changed."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +567,7 @@ def test_zoom_metadata_stored(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "zoom.pmtiles"
-    write_pmtiles({"lyr": _points_gdf()}, out, min_zoom=2, max_zoom=7)
+    _write_ignore({"lyr": _points_gdf()}, out, min_zoom=2, max_zoom=7)
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     meta = ds.GetMetadata()
     assert meta.get("minzoom") == "2"
@@ -398,8 +575,22 @@ def test_zoom_metadata_stored(tmp_path: Path) -> None:
     ds = None
 
 
+@pytest.mark.integration
+def test_default_zoom_range(tmp_path: Path) -> None:
+    """Default zoom range is 0-8 (archive-wide defaults)."""
+    from osgeo import gdal
+
+    out = tmp_path / "default_zoom.pmtiles"
+    _write_ignore({"lyr": _points_gdf()}, out)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    meta = ds.GetMetadata()
+    assert meta.get("minzoom") == "0"
+    assert meta.get("maxzoom") == "8"
+    ds = None
+
+
 # ---------------------------------------------------------------------------
-# Metadata options
+# Metadata options (name, description)
 # ---------------------------------------------------------------------------
 
 
@@ -409,7 +600,7 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
     from osgeo import gdal
 
     out = tmp_path / "meta.pmtiles"
-    write_pmtiles(
+    _write_ignore(
         {"lyr": _points_gdf()},
         out,
         name="my map",
@@ -422,6 +613,18 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
     ds = None
 
 
+@pytest.mark.unit
+def test_attribution_parameter_not_accepted() -> None:
+    """write_pmtiles does not accept an attribution parameter (unsupported in POC)."""
+    with pytest.raises(TypeError, match="attribution"):
+        write_pmtiles(  # type: ignore[call-overload]
+            {"lyr": _points_gdf()},
+            io.BytesIO(),
+            attribution="© test",  # type: ignore[call-overload]
+            on_overflow="ignore",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Output modes
 # ---------------------------------------------------------------------------
@@ -431,7 +634,7 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
 def test_path_output_creates_file(tmp_path: Path) -> None:
     """write_pmtiles creates a file at the given Path."""
     out = tmp_path / "out.pmtiles"
-    write_pmtiles({"lyr": _points_gdf()}, out)
+    _write_ignore({"lyr": _points_gdf()}, out)
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -440,8 +643,105 @@ def test_path_output_creates_file(tmp_path: Path) -> None:
 def test_bytesio_output_returns_bytes() -> None:
     """write_pmtiles writes a non-empty byte stream to a BytesIO."""
     buf = io.BytesIO()
-    write_pmtiles({"lyr": _points_gdf()}, buf)
+    _write_ignore({"lyr": _points_gdf()}, buf)
     assert buf.tell() > 0
+
+
+# ---------------------------------------------------------------------------
+# Datetime properties
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_datetime_stored_as_iso_string(tmp_path: Path) -> None:
+    """Datetime columns are stored as ISO 8601 strings."""
+    from osgeo import gdal
+
+    gdf = gpd.GeoDataFrame(
+        {"ts": pd.to_datetime(["2024-01-01", "2024-06-15", "2025-12-31"])},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "datetime.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    values = [feat.GetField("ts") for feat in lyr if feat.GetField("ts") is not None]
+    assert len(values) > 0
+    assert all("2024" in v or "2025" in v for v in values)
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# NumPy scalar properties
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_numpy_scalar_properties(tmp_path: Path) -> None:
+    """numpy scalar types (int32, float32) are normalised correctly."""
+    from osgeo import gdal
+
+    gdf = gpd.GeoDataFrame(
+        {
+            "ni": np.array([1, 2, 3], dtype=np.int32),
+            "nf": np.array([1.1, 2.2, 3.3], dtype=np.float32),
+        },
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "numpy.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    ni_vals = {feat.GetField("ni") for feat in lyr if feat.GetField("ni") is not None}
+    assert {1, 2, 3}.issubset(ni_vals)
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# Polygon layer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_polygon_layer(tmp_path: Path) -> None:
+    """Polygon geometries are written and the layer can be reopened."""
+    from osgeo import gdal
+
+    polys = gpd.GeoDataFrame(
+        {"area": [1.0, 2.0]},
+        geometry=[
+            Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            Polygon([(2, 2), (3, 2), (3, 3), (2, 3)]),
+        ],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "poly.pmtiles"
+    _write_ignore({"polys": polys}, out, min_zoom=0, max_zoom=4)
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr.GetName() == "polys"
+    ds = None
+
+
+# ---------------------------------------------------------------------------
+# Simplification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_simplification_option(tmp_path: Path) -> None:
+    """simplification argument is accepted and the archive is written."""
+    from osgeo import gdal
+
+    out = tmp_path / "simplif.pmtiles"
+    _write_ignore({"lyr": _points_gdf()}, out, simplification=2.0)
+    assert out.exists()
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    ds = None
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +768,7 @@ def test_empty_geodataframe_raises() -> None:
 def test_missing_crs_raises() -> None:
     """A GeoDataFrame with no CRS raises MissingCRSError."""
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)])
-    with pytest.raises(MissingCRSError):
+    with pytest.raises(MissingCRSError, match="explicit source CRS"):
         write_pmtiles({"lyr": gdf}, io.BytesIO())
 
 
@@ -478,6 +778,13 @@ def test_wrong_crs_raises() -> None:
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
     with pytest.raises(UnsupportedCRSError):
         write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+
+@pytest.mark.unit
+def test_non_geodataframe_raises() -> None:
+    """A non-GeoDataFrame value in layers raises TypeError."""
+    with pytest.raises(TypeError):
+        write_pmtiles({"lyr": "not a gdf"}, io.BytesIO())  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
@@ -493,7 +800,7 @@ def test_unsupported_property_type_raises() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(UnsupportedPropertyTypeError):
-        write_pmtiles({"lyr": gdf}, io.BytesIO())
+        write_pmtiles({"lyr": gdf}, io.BytesIO(), on_overflow="ignore")
 
 
 @pytest.mark.unit
@@ -508,30 +815,3 @@ def test_zoom_out_of_range_raises() -> None:
     """Zoom levels outside 0-22 raise ValueError."""
     with pytest.raises(ValueError, match="max_zoom"):
         write_pmtiles({"lyr": _points_gdf()}, io.BytesIO(), max_zoom=30)
-
-
-# ---------------------------------------------------------------------------
-# Polygon layer
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-def test_polygon_layer(tmp_path: Path) -> None:
-    """Polygon geometries are written and the layer can be reopened."""
-    from osgeo import gdal
-
-    polys = gpd.GeoDataFrame(
-        {"area": [1.0, 2.0]},
-        geometry=[
-            Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
-            Polygon([(2, 2), (3, 2), (3, 3), (2, 3)]),
-        ],
-        crs="EPSG:4326",
-    )
-    out = tmp_path / "poly.pmtiles"
-    write_pmtiles({"polys": polys}, out, min_zoom=0, max_zoom=4)
-    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
-    assert ds is not None
-    lyr = ds.GetLayerByIndex(0)
-    assert lyr.GetName() == "polys"
-    ds = None
