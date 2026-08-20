@@ -807,7 +807,7 @@ def test_attribution_invalid_type_raises() -> None:
             {"lyr": _points_gdf()},
             io.BytesIO(),
             attribution=123,  # type: ignore[arg-type]
-            on_overflow="ignore",
+            on_overflow="unsafe",
         )
 
 
@@ -948,7 +948,7 @@ def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
 def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
     """write_pmtiles stores attribution in metadata when output is a Path."""
     out = tmp_path / "attr.pmtiles"
-    _write_ignore({"pts": _points_gdf()}, out, attribution="Reuters, ECMWF")
+    _write_safe({"pts": _points_gdf()}, out, attribution="Reuters, ECMWF")
 
     meta = _read_pmtiles_metadata(out.read_bytes())
     assert meta.get("attribution") == "Reuters, ECMWF"
@@ -958,7 +958,7 @@ def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
 def test_attribution_stored_in_metadata_bytesio() -> None:
     """write_pmtiles stores attribution in metadata when output is a BytesIO."""
     buf = io.BytesIO()
-    _write_ignore({"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF")
+    _write_safe({"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF")
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -970,7 +970,7 @@ def test_attribution_unicode_preserved() -> None:
     """Unicode characters in attribution are preserved exactly."""
     unicode_attribution = "© Données — Réseau Géographique Japonais 日本語"
     buf = io.BytesIO()
-    _write_ignore({"pts": _points_gdf()}, buf, attribution=unicode_attribution)
+    _write_safe({"pts": _points_gdf()}, buf, attribution=unicode_attribution)
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -982,7 +982,7 @@ def test_attribution_html_preserved() -> None:
     """HTML markup in attribution is preserved exactly."""
     html_attribution = '<a href="https://example.com">© Example &amp; Co.</a>'
     buf = io.BytesIO()
-    _write_ignore({"pts": _points_gdf()}, buf, attribution=html_attribution)
+    _write_safe({"pts": _points_gdf()}, buf, attribution=html_attribution)
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -993,7 +993,7 @@ def test_attribution_html_preserved() -> None:
 def test_attribution_omitted_key_absent() -> None:
     """When attribution is not supplied the key is absent from the metadata."""
     buf = io.BytesIO()
-    _write_ignore({"pts": _points_gdf()}, buf)
+    _write_safe({"pts": _points_gdf()}, buf)
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -1004,7 +1004,7 @@ def test_attribution_omitted_key_absent() -> None:
 def test_attribution_empty_string_key_absent() -> None:
     """When attribution is an empty string the key is absent from the metadata."""
     buf = io.BytesIO()
-    _write_ignore({"pts": _points_gdf()}, buf, attribution="")
+    _write_safe({"pts": _points_gdf()}, buf, attribution="")
     buf.seek(0)
 
     meta = _read_pmtiles_metadata(buf.read())
@@ -1016,13 +1016,13 @@ def test_attribution_tile_hashes_unchanged() -> None:
     """Every MVT tile payload is byte-identical before and after attribution injection."""
     # Write without attribution first to get baseline tile hashes.
     buf_base = io.BytesIO()
-    _write_ignore({"pts": _points_gdf(), "lines": _lines_gdf()}, buf_base)
+    _write_safe({"pts": _points_gdf(), "lines": _lines_gdf()}, buf_base)
     buf_base.seek(0)
     base_bytes = buf_base.read()
 
     # Write with attribution.
     buf_attr = io.BytesIO()
-    _write_ignore(
+    _write_safe(
         {"pts": _points_gdf(), "lines": _lines_gdf()},
         buf_attr,
         attribution="© Test attribution",
@@ -1046,7 +1046,7 @@ def test_attribution_tile_hashes_unchanged() -> None:
 def test_attribution_multilayer_metadata_retained() -> None:
     """Attribution injection preserves name, description, and vector_layers for a multilayer archive."""
     buf = io.BytesIO()
-    _write_ignore(
+    _write_safe(
         {"points": _points_gdf(), "lines": _lines_gdf()},
         buf,
         min_zoom=0,
@@ -1080,7 +1080,7 @@ def test_attribution_era5_fixture(tmp_path: Path) -> None:
         min_zoom=0,
         max_zoom=0,
         attribution="Reuters, ECMWF",
-        on_overflow="ignore",
+        on_overflow="unsafe",
     )
 
     meta = _read_pmtiles_metadata(out.read_bytes())
@@ -1096,7 +1096,7 @@ def test_attribution_era5_fixture(tmp_path: Path) -> None:
 def test_attribution_other_metadata_fields_retained(tmp_path: Path) -> None:
     """name, description, min/max zoom, and vector_layers are intact after attribution injection."""
     out = tmp_path / "meta.pmtiles"
-    _write_ignore(
+    _write_safe(
         {"pts": _points_gdf()},
         out,
         name="metadata test",
