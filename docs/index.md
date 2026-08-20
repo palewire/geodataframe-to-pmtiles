@@ -1,8 +1,8 @@
 # geodataframe-to-pmtiles
 
 Write [PMTiles](https://protomaps.com/docs/pmtiles) vector archives from one or
-more [GeoPandas](https://geopandas.org) GeoDataFrames using
-[GDAL](https://gdal.org) directly — no subprocesses, no temporary files.
+more [GeoPandas](https://geopandas.org) GeoDataFrames using GDAL's native
+PMTiles vector driver — no subprocesses, no temporary files.
 
 ```{toctree}
 :maxdepth: 2
@@ -40,18 +40,17 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and lines layer",
-    attribution="© My Organisation",
+    on_overflow="warn",  # default: warn about GDAL tile-level drop risk
 )
 ```
 
-You can also write to a `BytesIO` stream — useful in web servers or pipelines
-that avoid touching the filesystem:
+Write to a `BytesIO` stream (useful in web servers or pipelines):
 
 ```python
 import io
 
 buf = io.BytesIO()
-write_pmtiles({"points": points}, buf)
+write_pmtiles({"points": points}, buf, on_overflow="ignore")
 buf.seek(0)
 # buf.read() contains the raw PMTiles bytes
 ```
@@ -60,8 +59,10 @@ buf.seek(0)
 
 ### CRS requirement
 
-All GeoDataFrames must be in **EPSG:4326** (geographic WGS 84).  Reproject
-before calling `write_pmtiles`:
+All GeoDataFrames must be in **EPSG:4326** (geographic WGS 84).  An explicit
+source CRS is required — passing a GeoDataFrame with no CRS set raises
+:class:`~geodataframe_to_pmtiles.MissingCRSError`.  Reproject before calling
+`write_pmtiles`:
 
 ```python
 gdf = gdf.to_crs("EPSG:4326")
@@ -76,26 +77,51 @@ gdf = gdf.to_crs("EPSG:4326")
 | `int` / `np.integer` | Integer64 | |
 | `float` / `np.float_` | Real | `NaN` → null |
 | `datetime` | String | ISO 8601 |
-| `list` / `dict` | String | JSON-encoded explicitly |
+| `list` / `dict` | String | JSON-encoded; must appear in `json_fields` or `json_fields=None` (auto) |
 | `None` / `pd.NA` | null | |
 | anything else | — | raises `UnsupportedPropertyTypeError` |
 
 Boolean values are stored as `0` / `1` integers because the MVT specification
 does not include a dedicated boolean type.  List- and dict-valued properties are
-JSON-encoded to strings; this encoding is deliberate and tested.
+explicitly JSON-encoded via `json.dumps`; this is intentional and tested.
+
+### json_fields: explicit JSON encoding
+
+By default (`json_fields=None`), all `list` and `dict` columns are
+auto-JSON-encoded.  To be more explicit, pass a list of column names:
+
+```python
+write_pmtiles(
+    {"lyr": gdf},
+    output,
+    json_fields=["tags", "metadata"],  # only these columns are JSON-encoded
+)
+```
+
+Any `list`- or `dict`-valued column not covered by `json_fields` raises
+:class:`~geodataframe_to_pmtiles.UnsupportedPropertyTypeError`.  This prevents
+GDAL's internal list-to-string conversion from leaking through.
+
+### Overflow policy
+
+The GDAL PMTiles driver silently drops features when a tile exceeds its per-tile
+`MAX_FEATURES` (set to `max(2_000_000, total_features_across_all_layers)`) or
+`MAX_SIZE` (500 MB) limit.  Dense spatial clustering can still produce overflow
+tiles; GDAL provides no post-write signal.
+
+* `on_overflow="error"` — raises :class:`~geodataframe_to_pmtiles.TileOverflowError`
+  before any data is written; the caller must opt in to `"warn"` or `"ignore"`.
+* `on_overflow="warn"` (default) — emits a `UserWarning`.
+* `on_overflow="ignore"` — writes silently.
 
 ### Known limitations
 
-* **Silent tile-level drops.**  The GDAL PMTiles driver can silently drop
-  features when a single tile exceeds its `MAX_SIZE` (bytes) or `MAX_FEATURES`
-  limit.  `write_pmtiles` sets both limits very high (500 MB / 2 000 000
-  features per tile) to reduce the chance of loss, but there is no guaranteed
-  error on overflow.  For large datasets, verify the output feature distribution
-  independently.
-* **Duplicate features when reading back.**  The MVT format stores features in
-  every tile they intersect, so feature counts reported by a reader will exceed
-  the input counts.  This is expected behaviour, not data loss.
-* **No simplification by default.**  Pass `simplification=<float>` to enable
-  geometry simplification (tolerance in tile-coordinate units, 4 096 per tile).
-* **Attribution is not a first-class GDAL metadata key.**  It is embedded in the
-  archive's TileJSON `CONF` blob and may not be surfaced by all readers.
+* **Attribution is not supported in this POC.**  Testing with GDAL 3.12.2 showed
+  that the `CONF` creation option does **not** write an `attribution` key to the
+  raw archive bytes.  The parameter is intentionally absent from the public API.
+  Support will be added when a reliable mechanism is found.
+* **Feature count inflation when reading back.**  The MVT format stores features
+  in every intersecting tile; read-back feature counts will exceed input counts.
+  This is not data loss.
+* **No simplification by default.**  Pass `simplification=<float>` to enable GDAL
+  geometry simplification (tolerance in tile-coordinate units, 4096 per tile).

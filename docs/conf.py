@@ -49,6 +49,9 @@ nitpick_ignore = [
     ("py:class", "gpd.GeoDataFrame"),
     ("py:class", "Path"),
     ("py:class", "BinaryIO"),
+    ("py:class", "geodataframe_to_pmtiles.UnsupportedPropertyTypeError"),
+    ("py:class", "geodataframe_to_pmtiles.TileOverflowError"),
+    ("py:class", "OverflowPolicy"),
 ]
 
 linkcheck_timeout = 10
