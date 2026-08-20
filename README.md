@@ -78,17 +78,25 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
 the full API reference.
 
-### `write(layers, output, *, layer=None, min_zoom, max_zoom, name, description, attribution, json_fields, on_overflow, simplification)`
+### `write` — two call forms
 
-Two forms are supported:
-- **Mapping form**: `write({"name": gdf, ...}, output)` — writes multiple named layers.
-- **Single-frame form**: `write(gdf, output, layer="name")` — writes one layer with an explicit name.
+**Mapping form** — multiple named layers:
+
+```
+write({"name": gdf, ...}, output, *, min_zoom, max_zoom, ...)
+```
+
+**Single-frame form** — one layer with an explicit name:
+
+```
+write(gdf, output, *, layer="name", min_zoom, max_zoom, ...)
+```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `layers` | `Mapping[str, GeoDataFrame] \| GeoDataFrame` | required | Layer name → GeoDataFrame mapping, or a single GeoDataFrame (requires `layer`). Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
-| `output` | `Path \| BinaryIO` | required | Destination path or binary stream. |
-| `layer` | `str \| None` | `None` | Layer name, required only for the single-frame form; must be omitted for mappings. |
+| `layers` | `Mapping[str, GeoDataFrame]` or `GeoDataFrame` | required | Layer name → GeoDataFrame mapping (mapping form), or a single GeoDataFrame (single-frame form, requires `layer`). Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
+| `output` | `str \| Path \| BinaryIO` | required | Destination file path (string or Path) or binary stream. |
+| `layer` | `str` | *(omit for mapping)* | Layer name. Required for the single-frame form (must be a `str`); must be omitted entirely when `layers` is a mapping. |
 | `min_zoom` | `int` | `0` | Archive-wide minimum zoom level (0-22). |
 | `max_zoom` | `int` | `8` | Archive-wide maximum zoom level (0-22). |
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |

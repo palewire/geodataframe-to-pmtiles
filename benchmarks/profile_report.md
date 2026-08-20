@@ -5,7 +5,7 @@ Recorded 2026-08-20 on macOS arm64 with GDAL 3.12.2, Python 3.14.5, Shapely
 
 ## Workload
 
-`benchmarks/bench_write.py` generates deterministic global point
+`benchmarks/bench_write_pmtiles.py` generates deterministic global point
 layers (seed 42). Each feature has an integer id, a string label, and a float
 value. The benchmark writes z0-8 archives to both a `Path` and `BytesIO`.
 
@@ -18,7 +18,7 @@ per-feature GDAL write. It does not change the archive format or public API.
 The following is the median of three timed runs after one warm-up from:
 
 ```sh
-python benchmarks/bench_write.py --fast
+python benchmarks/bench_write_pmtiles.py --fast
 ```
 
 | scale | output | wall time | Python peak memory | archive | tiles |
@@ -38,6 +38,6 @@ Use a Python environment that has GDAL with the PMTiles driver plus the locked
 test dependencies:
 
 ```sh
-python benchmarks/bench_write.py --fast
-python benchmarks/bench_write.py
+python benchmarks/bench_write_pmtiles.py --fast
+python benchmarks/bench_write_pmtiles.py
 ```

@@ -2102,6 +2102,18 @@ def test_write_single_gdf_with_layer_none_raises() -> None:
         write(gdf, buf, layer=None)  # type: ignore[call-overload]
 
 
+def test_write_single_gdf_with_layer_non_str_raises() -> None:
+    """write(gdf, output, layer=123) raises TypeError.
+
+    Passing a non-str value as ``layer`` must raise TypeError with a
+    message that names the offending type.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write(gdf, buf, layer=123)  # type: ignore[arg-type]
+
+
 @pytest.mark.integration
 def test_write_single_gdf_form(tmp_path: Path) -> None:
     from osgeo import gdal

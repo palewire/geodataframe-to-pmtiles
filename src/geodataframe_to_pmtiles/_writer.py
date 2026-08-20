@@ -588,7 +588,7 @@ def _tile_coordinates(message: str) -> tuple[int, int, int] | None:
 @overload
 def write(
     layers: Mapping[str, gpd.GeoDataFrame],
-    output: Path | BinaryIO,
+    output: str | Path | BinaryIO,
     *,
     min_zoom: int = ...,
     max_zoom: int = ...,
@@ -604,7 +604,7 @@ def write(
 @overload
 def write(
     layers: gpd.GeoDataFrame,
-    output: Path | BinaryIO,
+    output: str | Path | BinaryIO,
     *,
     layer: str,
     min_zoom: int = ...,
@@ -620,7 +620,7 @@ def write(
 
 def write(
     layers: Mapping[str, gpd.GeoDataFrame] | gpd.GeoDataFrame,
-    output: Path | BinaryIO,
+    output: str | Path | BinaryIO,
     *,
     layer: str | _MissingType | None = _MISSING,
     min_zoom: int = DEFAULT_MIN_ZOOM,
@@ -656,12 +656,13 @@ def write(
         mutated.  The mapping must not be empty, and no GeoDataFrame may be
         empty.
     output:
-        Destination for the archive.  Either a :class:`pathlib.Path` (written
-        through a temporary file in the same directory and then atomically
-        replaced) or any binary-writable stream such as :class:`io.BytesIO`.
+        Destination for the archive.  A :class:`str` or
+        :class:`pathlib.Path` (written through a temporary file in the same
+        directory and then atomically replaced) or any binary-writable stream
+        such as :class:`io.BytesIO`.
     layer:
         Layer name for the single-frame form.  Required when *layers* is a
-        :class:`~geopandas.GeoDataFrame`; must be omitted (or ``None``) when
+        :class:`~geopandas.GeoDataFrame`; must be omitted when
         *layers* is a mapping.
     min_zoom:
         Archive-wide minimum zoom level (0-22, default 0).
@@ -744,6 +745,11 @@ def write(
     """
     import geopandas as gpd
 
+    # Normalise a plain string output path to Path so downstream code
+    # can use isinstance(output, Path) uniformly.
+    if isinstance(output, str):
+        output = Path(output)
+
     # ------------------------------------------------------------------
     # Dispatch: single-GDF form vs. mapping form
     # ------------------------------------------------------------------
@@ -754,7 +760,9 @@ def write(
                 "gpm.write(gdf, output, layer='my_layer')."
             )
             raise TypeError(msg)
-        assert isinstance(layer, str)
+        if not isinstance(layer, str):
+            msg = f"'layer' must be a str, got {type(layer).__name__!r}."
+            raise TypeError(msg)
         layers_mapping: dict[str, gpd.GeoDataFrame] = {layer: layers}
     else:
         if layer is not _MISSING:
@@ -764,6 +772,13 @@ def write(
             )
             raise TypeError(msg)
         layers_mapping = dict(layers)
+        for key in layers_mapping:
+            if not isinstance(key, str):
+                msg = (
+                    f"All mapping keys must be strings; got key {key!r} "
+                    f"of type {type(key).__name__!r}."
+                )
+                raise TypeError(msg)
 
     _write_impl(
         layers_mapping,
