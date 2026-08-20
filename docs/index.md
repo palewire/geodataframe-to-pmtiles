@@ -83,7 +83,7 @@ gdf = gdf.to_crs("EPSG:4326")
 | Python / pandas type | MVT field type | Notes |
 |---|---|---|
 | `str` | String | |
-| `bool` / `np.bool_` | Integer (0 or 1) | MVT has no native bool |
+| `bool` / `np.bool_` | Boolean | Native MVT `bool_value` |
 | `int` / `np.integer` | Integer64 | |
 | `float` / `np.float_` | Real | `NaN` → null |
 | `datetime` | String | ISO 8601 |
@@ -91,9 +91,13 @@ gdf = gdf.to_crs("EPSG:4326")
 | `None` / `pd.NA` | null | |
 | anything else | — | raises `UnsupportedPropertyTypeError` |
 
-Boolean values are stored as `0` / `1` integers because the MVT specification
-does not include a dedicated boolean type.  List- and dict-valued properties are
-explicitly JSON-encoded via `json.dumps`; this is intentional and tested.
+Boolean values are stored with MVT's native `bool_value` encoding. Columns may
+contain nulls, including pandas `BooleanDtype` values even if every value is
+null. A scalar column cannot mix booleans with numeric `0` or `1`, because
+those are integers and remain numeric; such mixed columns raise
+:class:`~geodataframe_to_pmtiles.UnsupportedPropertyTypeError` instead of being
+silently coerced. List- and dict-valued properties are explicitly JSON-encoded
+via `json.dumps`; this is intentional and tested.
 
 ### json_fields: explicit JSON encoding
 

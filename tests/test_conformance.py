@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import pytest
 
 from geodataframe_to_pmtiles import write_pmtiles
@@ -142,6 +144,37 @@ def test_climate_fixture_preserves_semantics(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_climate_fixture_boolean_properties_decode_natively(tmp_path: Path) -> None:
+    """Climate-shaped Boolean fields keep their MVT bool_value representation."""
+    geojson = CLIMATE_FIXTURE / "era5-1982-07-22-t2m-max-delta.geojson"
+    gdf = gpd.read_file(geojson).head(3).copy()
+    gdf["is_land"] = [True, False, True]
+    gdf["complex_terrain"] = np.array([True, False, True], dtype=np.bool_)
+    gdf["gap_filled"] = pd.array([True, pd.NA, False], dtype="boolean")
+    gdf["continues"] = pd.Series([None, True, False], dtype=object)
+
+    out = tmp_path / "climate-boolean-properties.pmtiles"
+    _write_archive(
+        {"era5_t2m_max_delta": gdf},
+        out,
+        name="ERA5 Boolean properties",
+        description="Climate-shaped Boolean property fixture",
+    )
+
+    features = read_pmtiles_archive(out)[2]["era5_t2m_max_delta"]["features"]
+    expected = {
+        "is_land": [True, False, True],
+        "complex_terrain": [True, False, True],
+        "gap_filled": [True, None, False],
+        "continues": [None, True, False],
+    }
+    for field_name, values in expected.items():
+        decoded = [feature["properties"].get(field_name) for feature in features]
+        assert decoded == values
+        assert all(type(value) is bool for value in decoded if value is not None)
+
+
+@pytest.mark.integration
 def test_polygon_winding_fixture_preserves_holes(tmp_path: Path) -> None:
     """The polygon winding fixture keeps the hole semantics intact."""
     fixture = TIPPECANOE_FIXTURE / "polygon-winding" / "in.json"
@@ -168,6 +201,9 @@ def test_attribute_type_fixture_normalizes_values(tmp_path: Path) -> None:
     fixture = TIPPECANOE_FIXTURE / "attribute-type" / "in.json"
     source_features = _load_tippecanoe_features(fixture)
     gdf = gpd.GeoDataFrame.from_features(source_features, crs="EPSG:4326")
+    # Tippecanoe uses this field as test expectation metadata. It mixes booleans
+    # and numbers, which this writer intentionally rejects as ambiguous.
+    gdf = gdf.drop(columns="expect")
     out = tmp_path / "attribute-type.pmtiles"
     _write_archive(
         {"attribute_type": gdf},
@@ -186,7 +222,7 @@ def test_attribute_type_fixture_normalizes_values(tmp_path: Path) -> None:
     assert summary["metadata"]["vector_layers"] == [
         {
             "id": "attribute_type",
-            "fields": ["booltype", "expect", "floattype", "inttype", "stringtype"],
+            "fields": ["booltype", "floattype", "inttype", "stringtype"],
         }
     ]
 

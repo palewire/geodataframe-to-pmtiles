@@ -78,13 +78,19 @@ the full API reference.
 | Python / pandas type | MVT field | Notes |
 |---|---|---|
 | `str` | String | |
-| `bool` / `np.bool_` | Integer 0/1 | MVT has no native bool |
+| `bool` / `np.bool_` | Boolean | Native MVT boolean |
 | `int` / `np.integer` | Integer64 | |
 | `float` / `np.float_` | Real | NaN → null |
 | `datetime` | String | ISO 8601 |
 | `list` / `dict` | String | JSON-encoded; column must be in `json_fields` or `json_fields=None` (auto) |
 | `None` / `pd.NA` | null | |
 | other | — | `UnsupportedPropertyTypeError` |
+
+Boolean columns may contain nulls, including pandas `BooleanDtype` values even
+if every value is null. They must not mix booleans with numeric `0` or `1`:
+those are integers and remain numeric. Mixed scalar boolean/non-boolean
+columns raise `UnsupportedPropertyTypeError` instead of silently changing
+values.
 
 ### Exceptions
 

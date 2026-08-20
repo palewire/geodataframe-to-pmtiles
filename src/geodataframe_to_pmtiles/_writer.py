@@ -20,7 +20,7 @@ normaliser converts them before they reach OGR:
 +===========================+====================+==========================================+
 | ``str``                   | String             |                                          |
 +---------------------------+--------------------+------------------------------------------+
-| ``bool`` / ``np.bool_``   | Integer (0 or 1)   | MVT has no native bool; decoded as 1/0   |
+| ``bool`` / ``np.bool_``   | Boolean            | Encoded as native MVT ``bool_value``     |
 +---------------------------+--------------------+------------------------------------------+
 | ``int`` / ``np.integer``  | Integer64          | numpy scalars normalised to ``int``      |
 +---------------------------+--------------------+------------------------------------------+
@@ -181,8 +181,13 @@ def _ogr_field_types(ogr: Any) -> dict[str, int]:
         "string": int(ogr.OFTString),
         "int": int(ogr.OFTInteger64),
         "float": int(ogr.OFTReal),
-        "bool": int(ogr.OFTInteger),  # MVT has no native bool; store as 0/1
+        "bool": int(ogr.OFTInteger),
     }
+
+
+def _is_boolean(value: object) -> bool:
+    """Return whether *value* is a Python or NumPy boolean scalar."""
+    return isinstance(value, (bool, np.bool_))
 
 
 def _infer_property_kind(
@@ -203,6 +208,7 @@ def _infer_property_kind(
     col_name = str(series.name)
     _missing = object()
     first_non_null: object = _missing
+    property_kinds: set[PropertyKind] = set()
     saw_structured_value = False
 
     for val in series:
@@ -214,23 +220,25 @@ def _infer_property_kind(
         except (TypeError, ValueError):
             pass
 
-        if isinstance(val, bool) or (
-            isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
-        ):
+        if _is_boolean(val):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("bool")
             continue
         if isinstance(val, (int, np.integer)):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("int")
             continue
         if isinstance(val, (float, np.floating)):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("float")
             continue
         if isinstance(val, str):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("string")
             continue
         if isinstance(val, (list, dict)):
             if json_field_names is None or col_name in json_field_names:
@@ -245,11 +253,13 @@ def _infer_property_kind(
         if isinstance(val, (_dt.date, _dt.datetime)):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("string")
             continue
         # pandas Timestamp and other datetime-like types.
         if callable(getattr(type(val), "isoformat", None)):
             if first_non_null is _missing:
                 first_non_null = val
+            property_kinds.add("string")
             continue
         raise UnsupportedPropertyTypeError(
             f"Column '{col_name}' contains a value of type "
@@ -262,13 +272,19 @@ def _infer_property_kind(
         # Keep every value in the column as a string field so JSON payloads
         # never get coerced into zeroes by a numeric OGR field definition.
         return "string"
+    if first_non_null is _missing and pd.api.types.is_bool_dtype(series.dtype):
+        return "bool"
+    if "bool" in property_kinds and len(property_kinds) > 1:
+        raise UnsupportedPropertyTypeError(
+            f"Column '{col_name}' mixes boolean and non-boolean values. Boolean "
+            "properties must contain only bool, np.bool_, and null values; "
+            "numeric 0 and 1 values are integers, not booleans."
+        )
     if first_non_null is _missing:
         return "string"
 
     val = first_non_null
-    if isinstance(val, bool) or (
-        isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
-    ):
+    if _is_boolean(val):
         return "bool"
     if isinstance(val, (int, np.integer)):
         return "int"
@@ -311,10 +327,8 @@ def _normalise_value(
     except (TypeError, ValueError):
         pass
 
-    if isinstance(val, bool) or (
-        isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
-    ):
-        return False, int(val)
+    if _is_boolean(val):
+        return False, bool(val)
     if isinstance(val, np.integer):
         return False, int(val)
     if isinstance(val, np.floating):
@@ -526,9 +540,9 @@ def write_pmtiles(
     -----
     List- and dict-valued properties are explicitly JSON-encoded to strings;
     they are never passed raw to ``OGR Feature.SetField`` (which rejects them).
-    Boolean values are stored as integers (1 / 0) because MVT has no native
-    bool type.  numpy scalars and ``datetime``/``pd.Timestamp`` objects are
-    normalised to Python native types before reaching OGR.
+    Boolean values use MVT's native ``bool_value`` encoding through OGR's
+    Boolean field subtype.  numpy scalars and ``datetime``/``pd.Timestamp``
+    objects are normalised to Python native types before reaching OGR.
 
     The default writes to GDAL's in-memory filesystem and publishes the result
     only after its closing diagnostics confirm that neither tile limit acted.
@@ -724,7 +738,10 @@ def _write_layer(
         col: ogr_field_types[field_kinds[col]] for col in property_cols
     }
     for col in property_cols:
-        lyr.CreateField(ogr.FieldDefn(col, field_types[col]))
+        field_defn = ogr.FieldDefn(col, field_types[col])
+        if field_kinds[col] == "bool":
+            field_defn.SetSubType(ogr.OFSTBoolean)
+        lyr.CreateField(field_defn)
 
     layer_defn = lyr.GetLayerDefn()
     geom_col = str(gdf.geometry.name)
