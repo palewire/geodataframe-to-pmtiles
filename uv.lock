@@ -932,7 +932,7 @@ requires-dist = [
     { name = "geopandas", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "pmtiles", specifier = ">=3.3" },
+    { name = "pmtiles", specifier = ">=3.3,<4" },
 ]
 
 [package.metadata.requires-dev]
@@ -970,7 +970,7 @@ test = [
     { name = "mapbox-vector-tile" },
     { name = "numpy" },
     { name = "pandas" },
-    { name = "pmtiles" },
+    { name = "pmtiles", specifier = ">=3.3,<4" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },

@@ -815,47 +815,71 @@ def test_attribution_invalid_type_raises() -> None:
 def test_inject_attribution_unit() -> None:
     """_inject_attribution patches metadata without touching tile payloads (no GDAL needed)."""
     from pmtiles.reader import MemorySource, Reader, all_tiles
-    from pmtiles.tile import Compression, TileType, zxy_to_tileid
-    from pmtiles.writer import Writer
+    from pmtiles.tile import zxy_to_tileid
 
     from geodataframe_to_pmtiles._writer import _inject_attribution
 
-    # Build a minimal in-memory PMTiles archive with the official writer.
-    buf = io.BytesIO()
-    w = Writer(buf)
-    tile_payload = b"fake-mvt-tile-bytes-do-not-change"
-    w.write_tile(zxy_to_tileid(0, 0, 0), tile_payload)
-    w.finalize(
-        {
-            "tile_type": TileType.MVT,
-            "tile_compression": Compression.GZIP,
-        },
-        {"name": "unit-test", "vector_layers": []},
+    metadata = {
+        "name": "unit-test",
+        "description": "unit-test-desc",
+        "vector_layers": [
+            {"id": "lyr", "description": "layer", "fields": {"name": "String"}}
+        ],
+        "unknown": {"nested": ["alpha", 1]},
+    }
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        metadata,
     )
-    original = buf.getvalue()
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
 
     # Confirm attribution is absent before injection.
-    assert "attribution" not in Reader(MemorySource(original)).metadata()
+    assert "attribution" not in original_meta
 
     # Inject attribution.
     patched = _inject_attribution(original, "© Unit Test Ünïcödé")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
 
     # Attribution key must be present with the exact value.
-    meta = Reader(MemorySource(patched)).metadata()
-    assert meta.get("attribution") == "© Unit Test Ünïcödé"
-    assert meta.get("name") == "unit-test"
+    meta = patched_reader.metadata()
+    assert meta == {**original_meta, "attribution": "© Unit Test Ünïcödé"}
 
-    # Every tile payload must be byte-for-byte unchanged.
-    original_hashes = {
-        zxy: hashlib.sha256(t).hexdigest()
-        for zxy, t in all_tiles(MemorySource(original))
-    }
-    patched_hashes = {
-        zxy: hashlib.sha256(t).hexdigest()
-        for zxy, t in all_tiles(MemorySource(patched))
-    }
-    assert original_hashes == patched_hashes
-    # The archives themselves must differ (metadata section changed).
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+
+    assert _pmtiles_section(
+        original, original_header, "root_offset", "root_length"
+    ) == _pmtiles_section(patched, patched_header, "root_offset", "root_length")
+    assert _pmtiles_section(
+        original, original_header, "metadata_offset", "metadata_length"
+    ) != _pmtiles_section(patched, patched_header, "metadata_offset", "metadata_length")
+    assert _pmtiles_section(
+        original, original_header, "leaf_directory_offset", "leaf_directory_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "leaf_directory_offset", "leaf_directory_length"
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
     assert original != patched
 
 
@@ -869,6 +893,40 @@ def _read_pmtiles_metadata(data: bytes) -> dict:
     from pmtiles.reader import MemorySource, Reader
 
     return Reader(MemorySource(data)).metadata()
+
+
+def _build_pmtiles_archive(
+    tiles: list[tuple[int, bytes]],
+    metadata: dict[str, object],
+) -> bytes:
+    """Build a small PMTiles archive with the official writer."""
+    from pmtiles.tile import Compression, TileType
+    from pmtiles.writer import Writer
+
+    buf = io.BytesIO()
+    writer = Writer(buf)
+    for tile_id, tile_bytes in tiles:
+        writer.write_tile(tile_id, tile_bytes)
+    writer.finalize(
+        {
+            "tile_type": TileType.MVT,
+            "tile_compression": Compression.GZIP,
+        },
+        metadata,
+    )
+    return buf.getvalue()
+
+
+def _pmtiles_section(
+    data: bytes,
+    header: dict[str, object],
+    offset_key: str,
+    length_key: str,
+) -> bytes:
+    """Return a raw PMTiles section from *data* using header offsets."""
+    start = int(header[offset_key])
+    stop = start + int(header[length_key])
+    return data[start:stop]
 
 
 def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
@@ -1041,6 +1099,8 @@ def test_attribution_other_metadata_fields_retained(tmp_path: Path) -> None:
     _write_ignore(
         {"pts": _points_gdf()},
         out,
+        name="metadata test",
+        description="metadata desc",
         min_zoom=0,
         max_zoom=4,
         attribution="Test provider",
@@ -1048,9 +1108,124 @@ def test_attribution_other_metadata_fields_retained(tmp_path: Path) -> None:
     # Verify via pmtiles.reader.Reader (the official API).
     meta = _read_pmtiles_metadata(out.read_bytes())
     assert meta.get("attribution") == "Test provider"
+    assert meta.get("name") == "metadata test"
+    assert meta.get("description") == "metadata desc"
+    assert meta.get("minzoom") == "0"
+    assert meta.get("maxzoom") == "4"
     # vector_layers must still describe the pts layer.
     layer_ids = [lyr["id"] for lyr in meta.get("vector_layers", [])]
     assert "pts" in layer_ids
+
+
+@pytest.mark.unit
+def test_attribution_preserves_leaf_directory_layout() -> None:
+    """Attribution injection preserves a multi-leaf archive layout and raw tile bytes."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [
+            (zxy_to_tileid(10, i % 1024, i // 1024), f"data-{i}".encode())
+            for i in range(12_000)
+        ],
+        {"name": "leaf", "description": "leaf-desc", "vector_layers": []},
+    )
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
+    assert original_header["leaf_directory_length"] > 0
+
+    patched = _inject_attribution(original, "Leaf attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Leaf attribution",
+    }
+
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+    assert _pmtiles_section(
+        original, original_header, "root_offset", "root_length"
+    ) == _pmtiles_section(patched, patched_header, "root_offset", "root_length")
+    assert _pmtiles_section(
+        original, original_header, "leaf_directory_offset", "leaf_directory_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "leaf_directory_offset", "leaf_directory_length"
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+
+
+@pytest.mark.unit
+def test_attribution_preserves_duplicate_tile_entries() -> None:
+    """Attribution injection keeps run-length and deduplicated tile entries valid."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(5, i, 0), b"payload") for i in range(20)],
+        {"name": "dup", "description": "dup-desc", "vector_layers": []},
+    )
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
+    assert original_header["tile_contents_count"] == 1
+
+    patched = _inject_attribution(original, "Duplicate attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Duplicate attribution",
+    }
+    assert patched_header["tile_entries_count"] == original_header["tile_entries_count"]
+    assert (
+        patched_header["tile_contents_count"] == original_header["tile_contents_count"]
+    )
+
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
 
 
 # ---------------------------------------------------------------------------
