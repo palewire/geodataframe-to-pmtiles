@@ -10,6 +10,7 @@ dependencies = [
     "geopandas>=1.0",
     "numpy>=1.24",
     "pandas>=2.0",
+    "pmtiles>=3.3",
 ]
 authors = [{ name = "palewire", email = "palewire@users.noreply.github.com" }]
 description = "Write PMTiles vector archives from one or more GeoPandas GeoDataFrames using GDAL"

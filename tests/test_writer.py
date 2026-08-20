@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
 import io
@@ -799,14 +800,264 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_attribution_parameter_not_accepted() -> None:
-    """write_pmtiles does not accept an attribution parameter (unsupported in POC)."""
+def test_attribution_invalid_type_raises() -> None:
+    """write_pmtiles raises TypeError when attribution is not a str."""
     with pytest.raises(TypeError, match="attribution"):
         write_pmtiles(  # type: ignore[call-overload]
             {"lyr": _points_gdf()},
             io.BytesIO(),
-            attribution="© test",  # type: ignore[call-overload]
+            attribution=123,  # type: ignore[arg-type]
+            on_overflow="ignore",
         )
+
+
+@pytest.mark.unit
+def test_inject_attribution_unit() -> None:
+    """_inject_attribution patches metadata without touching tile payloads (no GDAL needed)."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import Compression, TileType, zxy_to_tileid
+    from pmtiles.writer import Writer
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    # Build a minimal in-memory PMTiles archive with the official writer.
+    buf = io.BytesIO()
+    w = Writer(buf)
+    tile_payload = b"fake-mvt-tile-bytes-do-not-change"
+    w.write_tile(zxy_to_tileid(0, 0, 0), tile_payload)
+    w.finalize(
+        {
+            "tile_type": TileType.MVT,
+            "tile_compression": Compression.GZIP,
+        },
+        {"name": "unit-test", "vector_layers": []},
+    )
+    original = buf.getvalue()
+
+    # Confirm attribution is absent before injection.
+    assert "attribution" not in Reader(MemorySource(original)).metadata()
+
+    # Inject attribution.
+    patched = _inject_attribution(original, "© Unit Test Ünïcödé")
+
+    # Attribution key must be present with the exact value.
+    meta = Reader(MemorySource(patched)).metadata()
+    assert meta.get("attribution") == "© Unit Test Ünïcödé"
+    assert meta.get("name") == "unit-test"
+
+    # Every tile payload must be byte-for-byte unchanged.
+    original_hashes = {
+        zxy: hashlib.sha256(t).hexdigest()
+        for zxy, t in all_tiles(MemorySource(original))
+    }
+    patched_hashes = {
+        zxy: hashlib.sha256(t).hexdigest()
+        for zxy, t in all_tiles(MemorySource(patched))
+    }
+    assert original_hashes == patched_hashes
+    # The archives themselves must differ (metadata section changed).
+    assert original != patched
+
+
+# ---------------------------------------------------------------------------
+# Attribution helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_pmtiles_metadata(data: bytes) -> dict:
+    """Parse the TileJSON metadata from a PMTiles archive in memory."""
+    from pmtiles.reader import MemorySource, Reader
+
+    return Reader(MemorySource(data)).metadata()
+
+
+def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
+    """Return a mapping of (z, x, y) → SHA-256 hex for every tile in the archive."""
+    from pmtiles.reader import MemorySource, all_tiles
+
+    return {
+        zxy: hashlib.sha256(tile_bytes).hexdigest()
+        for zxy, tile_bytes in all_tiles(MemorySource(data))
+    }
+
+
+# ---------------------------------------------------------------------------
+# Attribution tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
+    """write_pmtiles stores attribution in metadata when output is a Path."""
+    out = tmp_path / "attr.pmtiles"
+    _write_ignore(
+        {"pts": _points_gdf()}, out, attribution="© OpenStreetMap contributors"
+    )
+
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert meta.get("attribution") == "© OpenStreetMap contributors"
+
+
+@pytest.mark.integration
+def test_attribution_stored_in_metadata_bytesio() -> None:
+    """write_pmtiles stores attribution in metadata when output is a BytesIO."""
+    buf = io.BytesIO()
+    _write_ignore(
+        {"pts": _points_gdf()}, buf, attribution="© OpenStreetMap contributors"
+    )
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == "© OpenStreetMap contributors"
+
+
+@pytest.mark.integration
+def test_attribution_unicode_preserved() -> None:
+    """Unicode characters in attribution are preserved exactly."""
+    unicode_attribution = "© Données — Réseau Géographique Japonais 日本語"
+    buf = io.BytesIO()
+    _write_ignore({"pts": _points_gdf()}, buf, attribution=unicode_attribution)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == unicode_attribution
+
+
+@pytest.mark.integration
+def test_attribution_html_preserved() -> None:
+    """HTML markup in attribution is preserved exactly."""
+    html_attribution = '<a href="https://example.com">© Example &amp; Co.</a>'
+    buf = io.BytesIO()
+    _write_ignore({"pts": _points_gdf()}, buf, attribution=html_attribution)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == html_attribution
+
+
+@pytest.mark.integration
+def test_attribution_omitted_key_absent() -> None:
+    """When attribution is not supplied the key is absent from the metadata."""
+    buf = io.BytesIO()
+    _write_ignore({"pts": _points_gdf()}, buf)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert "attribution" not in meta
+
+
+@pytest.mark.integration
+def test_attribution_empty_string_key_absent() -> None:
+    """When attribution is an empty string the key is absent from the metadata."""
+    buf = io.BytesIO()
+    _write_ignore({"pts": _points_gdf()}, buf, attribution="")
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert "attribution" not in meta
+
+
+@pytest.mark.integration
+def test_attribution_tile_hashes_unchanged() -> None:
+    """Every MVT tile payload is byte-identical before and after attribution injection."""
+    # Write without attribution first to get baseline tile hashes.
+    buf_base = io.BytesIO()
+    _write_ignore({"pts": _points_gdf(), "lines": _lines_gdf()}, buf_base)
+    buf_base.seek(0)
+    base_bytes = buf_base.read()
+
+    # Write with attribution.
+    buf_attr = io.BytesIO()
+    _write_ignore(
+        {"pts": _points_gdf(), "lines": _lines_gdf()},
+        buf_attr,
+        attribution="© Test attribution",
+    )
+    buf_attr.seek(0)
+    attr_bytes = buf_attr.read()
+
+    # Tile hashes must be identical; only the metadata section changes.
+    base_hashes = _all_tile_hashes(base_bytes)
+    attr_hashes = _all_tile_hashes(attr_bytes)
+
+    assert base_hashes == attr_hashes, (
+        "Some tile payloads changed after attribution injection; "
+        f"differing tiles: {set(base_hashes) ^ set(attr_hashes)}"
+    )
+    # Sanity: the archives must actually differ (the metadata section changed).
+    assert base_bytes != attr_bytes
+
+
+@pytest.mark.integration
+def test_attribution_multilayer_metadata_retained() -> None:
+    """Attribution injection preserves name, description, and vector_layers for a multilayer archive."""
+    buf = io.BytesIO()
+    _write_ignore(
+        {"points": _points_gdf(), "lines": _lines_gdf()},
+        buf,
+        min_zoom=0,
+        max_zoom=2,
+        attribution="© multilayer test",
+    )
+    buf.seek(0)
+    meta = _read_pmtiles_metadata(buf.read())
+
+    assert meta.get("attribution") == "© multilayer test"
+    layer_ids = {lyr["id"] for lyr in meta.get("vector_layers", [])}
+    assert "points" in layer_ids
+    assert "lines" in layer_ids
+
+
+@pytest.mark.integration
+def test_attribution_era5_fixture(tmp_path: Path) -> None:
+    """Attribution injection works on a real-world ERA5 fixture archive."""
+    fixture = (
+        Path(__file__).with_name("fixtures")
+        / "conformance"
+        / "climate"
+        / "era5-1982-07-22-t2m-max-delta.geojson"
+    )
+    gdf = gpd.read_file(fixture).to_crs("EPSG:4326")
+
+    out = tmp_path / "era5.pmtiles"
+    write_pmtiles(
+        {"era5": gdf},
+        out,
+        min_zoom=0,
+        max_zoom=0,
+        attribution="ERA5 data provided by ECMWF — © Copernicus Climate Service",
+        on_overflow="ignore",
+    )
+
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert (
+        meta.get("attribution")
+        == "ERA5 data provided by ECMWF — © Copernicus Climate Service"
+    )
+    # Tiles must still be present.
+    from pmtiles.reader import MemorySource, all_tiles
+
+    tiles = list(all_tiles(MemorySource(out.read_bytes())))
+    assert len(tiles) > 0
+
+
+@pytest.mark.integration
+def test_attribution_other_metadata_fields_retained(tmp_path: Path) -> None:
+    """name, description, min/max zoom, and vector_layers are intact after attribution injection."""
+    out = tmp_path / "meta.pmtiles"
+    _write_ignore(
+        {"pts": _points_gdf()},
+        out,
+        min_zoom=0,
+        max_zoom=4,
+        attribution="Test provider",
+    )
+    # Verify via pmtiles.reader.Reader (the official API).
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert meta.get("attribution") == "Test provider"
+    # vector_layers must still describe the pts layer.
+    layer_ids = [lyr["id"] for lyr in meta.get("vector_layers", [])]
+    assert "pts" in layer_ids
 
 
 # ---------------------------------------------------------------------------
