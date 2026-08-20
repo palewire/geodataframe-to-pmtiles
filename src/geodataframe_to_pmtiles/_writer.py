@@ -211,6 +211,28 @@ _MAX_SIZE: int = 10_000_000
 
 PropertyKind = Literal["string", "int", "float", "bool"]
 
+
+class _MissingType:
+    """Sentinel singleton — instances signal "argument was not supplied".
+
+    Using a dedicated type (rather than ``None``) lets the ``write``
+    implementation distinguish ``layer=None`` (invalid explicit call) from
+    the keyword being omitted entirely (valid for the mapping form).
+    """
+
+    _instance: _MissingType | None = None
+
+    def __new__(cls) -> _MissingType:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return "_MISSING"
+
+
+_MISSING = _MissingType()
+
 # ---------------------------------------------------------------------------
 # Web Mercator boundary constants
 # ---------------------------------------------------------------------------
@@ -600,7 +622,7 @@ def write(
     layers: Mapping[str, gpd.GeoDataFrame] | gpd.GeoDataFrame,
     output: Path | BinaryIO,
     *,
-    layer: str | None = None,
+    layer: str | _MissingType | None = _MISSING,
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
     name: str = "",
@@ -726,15 +748,16 @@ def write(
     # Dispatch: single-GDF form vs. mapping form
     # ------------------------------------------------------------------
     if isinstance(layers, gpd.GeoDataFrame):
-        if layer is None:
+        if layer is _MISSING or layer is None:
             msg = (
                 "Pass a layer name when writing a single GeoDataFrame: "
                 "gpm.write(gdf, output, layer='my_layer')."
             )
             raise TypeError(msg)
+        assert isinstance(layer, str)
         layers_mapping: dict[str, gpd.GeoDataFrame] = {layer: layers}
     else:
-        if layer is not None:
+        if layer is not _MISSING:
             msg = (
                 "The 'layer' argument must not be provided when 'layers' is a "
                 "mapping; the layer names are taken from the mapping keys."

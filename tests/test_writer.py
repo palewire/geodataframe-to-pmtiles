@@ -2077,9 +2077,33 @@ def test_write_mapping_with_layer_raises() -> None:
         write({"pts": gdf}, buf, layer="pts")  # type: ignore[call-overload]
 
 
+def test_write_mapping_with_layer_none_raises() -> None:
+    """write(mapping, output, layer=None) raises TypeError.
+
+    Explicitly passing ``layer=None`` to the mapping form must be rejected
+    because *None* is an invalid layer argument in that context — it is not
+    the same as omitting the keyword entirely.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write({"pts": gdf}, buf, layer=None)  # type: ignore[call-overload]
+
+
+def test_write_single_gdf_with_layer_none_raises() -> None:
+    """write(gdf, output, layer=None) raises TypeError.
+
+    Explicitly passing ``layer=None`` to the single-frame form is as invalid
+    as omitting the keyword — both must raise TypeError.
+    """
+    gdf = _points_gdf()
+    buf = io.BytesIO()
+    with pytest.raises(TypeError, match="layer"):
+        write(gdf, buf, layer=None)  # type: ignore[call-overload]
+
+
 @pytest.mark.integration
 def test_write_single_gdf_form(tmp_path: Path) -> None:
-    """write(gdf, output, layer='name') produces a valid single-layer archive."""
     from osgeo import gdal
 
     gdf = _points_gdf()
