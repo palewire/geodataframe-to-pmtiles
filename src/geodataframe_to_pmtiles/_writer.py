@@ -733,8 +733,9 @@ def _write_layer(
     further converted to 0 / 1 :class:`int` values, matching the MVT
     encoding rule documented in the module docstring.  For ``string``-kind
     columns a fast path handles the common all-strings case; only columns
-    that contain non-string values (``datetime``, ``list``, ``dict``) invoke
-    the full per-row normaliser for those cells.
+    that contain non-string values (``datetime``, ``list``, ``dict``) use
+    per-row conversion via :func:`str` or ``isoformat``/``json.dumps`` as
+    appropriate for each value type.
     """
     import shapely
 

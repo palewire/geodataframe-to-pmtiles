@@ -1136,8 +1136,12 @@ def test_optimised_path_and_bytesio_decoded_equivalent(tmp_path: Path) -> None:
 
     def _count_features(p: Path) -> int:
         ds = gdal.OpenEx(str(p), gdal.OF_VECTOR)
+        assert ds is not None, f"gdal.OpenEx could not open {p}"
         lyr = ds.GetLayerByIndex(0)
-        return sum(1 for _ in lyr)
+        assert lyr is not None, f"GetLayerByIndex(0) returned None for {p}"
+        count = sum(1 for _ in lyr)
+        ds = None  # release dataset handle to avoid file lock / leak
+        return count
 
     assert _count_features(path_out) == _count_features(buf_out), (
         "Path and BytesIO decode to different feature counts"

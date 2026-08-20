@@ -215,6 +215,7 @@ unused-ignore-comment = "error"
 
 [tool.deptry]
 # Ignore self-imports (DEP003) for the package itself.
-# Benchmarks use optional utilities (shapely, pmtiles) that are test/dev deps.
+# Benchmarks use optional utilities (pmtiles) that are test/dev deps only.
+# Shapely is a runtime dependency and is not excluded from the main source.
 per_rule_ignores = {"DEP003" = ["geodataframe_to_pmtiles"]}
 extend_exclude = ["benchmarks"]
