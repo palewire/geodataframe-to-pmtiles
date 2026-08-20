@@ -204,13 +204,19 @@ def _infer_property_kind(
 ) -> PropertyKind:
     """Return the normalised property kind for *series*.
 
-    Only the first non-null value is examined.  An entirely-null series is
-    typed as ``"string"``.  Raises ``UnsupportedPropertyTypeError`` for types
-    that cannot be normalised, respecting the ``json_field_names`` policy.
+    Pure scalar columns are typed from their first non-null value.  If a column
+    contains any list/dict values and JSON encoding is allowed for that column,
+    the entire column is treated as ``"string"`` so JSON payloads never get
+    coerced into numeric zeroes.  An entirely-null series is typed as
+    ``"string"``.  Raises ``UnsupportedPropertyTypeError`` for types that
+    cannot be normalised, respecting the ``json_field_names`` policy.
     """
     import pandas as pd
 
     col_name = str(series.name)
+    _missing = object()
+    first_non_null: object = _missing
+    saw_structured_value = False
 
     for val in series:
         if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -224,16 +230,25 @@ def _infer_property_kind(
         if isinstance(val, bool) or (
             isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
         ):
-            return "bool"
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         if isinstance(val, (int, np.integer)):
-            return "int"
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         if isinstance(val, (float, np.floating)):
-            return "float"
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         if isinstance(val, str):
-            return "string"
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         if isinstance(val, (list, dict)):
             if json_field_names is None or col_name in json_field_names:
-                return "string"  # will be JSON-encoded
+                saw_structured_value = True
+                continue
             raise UnsupportedPropertyTypeError(
                 f"Column '{col_name}' contains list/dict values that would be "
                 "JSON-encoded, but this column is not in json_fields.  "
@@ -241,10 +256,14 @@ def _infer_property_kind(
                 f"or include '{col_name}' in json_fields explicitly."
             )
         if isinstance(val, (_dt.date, _dt.datetime)):
-            return "string"  # ISO 8601 string
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         # pandas Timestamp and other datetime-like types.
         if callable(getattr(type(val), "isoformat", None)):
-            return "string"  # ISO 8601 string
+            if first_non_null is _missing:
+                first_non_null = val
+            continue
         raise UnsupportedPropertyTypeError(
             f"Column '{col_name}' contains a value of type "
             f"{type(val).__name__!r} which cannot be encoded as an MVT "
@@ -252,7 +271,35 @@ def _infer_property_kind(
             "list (with json_fields), dict (with json_fields), datetime, None / NA."
         )
 
-    return "string"
+    if saw_structured_value:
+        # Keep every value in the column as a string field so JSON payloads
+        # never get coerced into zeroes by a numeric OGR field definition.
+        return "string"
+    if first_non_null is _missing:
+        return "string"
+
+    val = first_non_null
+    if isinstance(val, bool) or (
+        isinstance(val, np.generic) and np.issubdtype(type(val), np.bool_)
+    ):
+        return "bool"
+    if isinstance(val, (int, np.integer)):
+        return "int"
+    if isinstance(val, (float, np.floating)):
+        return "float"
+    if isinstance(val, str):
+        return "string"
+    if isinstance(val, (_dt.date, _dt.datetime)):
+        return "string"
+    # pandas Timestamp and other datetime-like types.
+    if callable(getattr(type(val), "isoformat", None)):
+        return "string"
+    raise UnsupportedPropertyTypeError(
+        f"Column '{col_name}' contains a value of type "
+        f"{type(val).__name__!r} which cannot be encoded as an MVT property.  "
+        "Supported types: str, bool, int, float, list (with json_fields), "
+        "dict (with json_fields), datetime, None / NA."
+    )
 
 
 def _normalise_value(

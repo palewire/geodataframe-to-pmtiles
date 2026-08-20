@@ -54,6 +54,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Structured list/dict columns now force String fields before writing, so mixed
+  columns round-trip as explicit JSON strings instead of being silently coerced
+  into numeric zeroes by OGR.
+
 ### Removed
 
 ### Security

@@ -416,6 +416,29 @@ def test_list_property_json_encoded_explicit(tmp_path: Path) -> None:
     ds = None
 
 
+@pytest.mark.integration
+def test_mixed_json_column_is_stringified(tmp_path: Path) -> None:
+    """A mixed scalar/list column is stringified instead of being coerced to zero."""
+    from osgeo import gdal
+
+    gdf = gpd.GeoDataFrame(
+        {"idx": [0, 1, 2], "mixed": [1, [2, 3], 4]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "mixed.pmtiles"
+    _write_ignore({"lyr": gdf}, out, min_zoom=0, max_zoom=4, json_fields=["mixed"])
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    lyr = ds.GetLayerByIndex(0)
+    seen: dict[int, str] = {}
+    for feat in lyr:
+        idx = feat.GetField("idx")
+        if idx not in seen:
+            seen[idx] = feat.GetField("mixed")
+    assert seen == {0: "1", 1: "[2, 3]", 2: "4"}
+    ds = None
+
+
 @pytest.mark.unit
 def test_list_column_not_in_json_fields_raises() -> None:
     """A list column NOT in json_fields raises UnsupportedPropertyTypeError."""

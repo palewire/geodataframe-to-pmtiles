@@ -65,7 +65,6 @@ jobs:
           create-args: >-
             python=${{ matrix.python }}
             gdal=3.12.2
-          channels: conda-forge
           init-shell: bash
 
       - name: Configure GDAL runtime
