@@ -462,6 +462,25 @@ def test_polygon_crossing_north_limit_is_clipped_and_preserved() -> None:
 
 
 @pytest.mark.integration
+def test_reprojected_polygon_crossing_north_limit_is_clipped_and_preserved() -> None:
+    """Boundary validation runs after the input layer is reprojected to WGS 84."""
+    poly = Polygon([(10, 80), (20, 80), (20, 88), (10, 88), (10, 80)])
+    gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[poly], crs="EPSG:4326").to_crs(
+        "EPSG:3857"
+    )
+
+    data, caught = _write_capturing_warnings(gdf, max_zoom=0, layer="polys")
+
+    assert not [
+        warning
+        for warning in caught
+        if "outside" in str(warning.message).lower()
+        or "Web Mercator" in str(warning.message)
+    ]
+    assert count_features_in_tile(data, "polys", z=0, x=0, y=0) == 1
+
+
+@pytest.mark.integration
 def test_polygon_crossing_south_limit_is_clipped_and_preserved() -> None:
     """A polygon that crosses the south Mercator limit is clipped and preserved."""
     # Polygon from -80°N to -88°N

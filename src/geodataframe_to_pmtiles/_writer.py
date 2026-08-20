@@ -64,7 +64,8 @@ where every feature or coordinate matters.
 The PMTiles/MVT tile scheme uses Web Mercator (EPSG:3857), which maps only
 the latitude range **±85.05112877980659°** (the Google/OSM slippy-map limit,
 referred to as ``WEB_MERCATOR_LAT_LIMIT`` in this module).  ``write_pmtiles``
-accepts EPSG:4326 input; the GDAL PMTiles driver reprojects internally.
+reprojects every input layer to EPSG:4326 before passing it to the GDAL PMTiles
+driver.
 
 **Input-side boundary handling (performed by this library before GDAL):**
 
@@ -75,7 +76,7 @@ accepts EPSG:4326 input; the GDAL PMTiles driver reprojects internally.
    this check GDAL would discard such features silently.
 
 2. Geometries that *partially* overlap the extent (e.g. a polygon that crosses
-   85° N) are passed to GDAL unmodified.  GDAL clips them to the tile boundary
+   85° N) are passed to GDAL.  GDAL clips them to the tile boundary
    internally using its ``EXTENT``/``BUFFER`` tile coordinate system.
 
 **Longitude:** ±180° is supported.  A ``MultiPolygon`` manually split at the
@@ -89,8 +90,8 @@ part in the appropriate tile column.
 * ``BUFFER = 80`` — extra tile units included beyond the tile edge; a feature
   is included in a tile if it falls within ``EXTENT + BUFFER`` of the tile
   origin.  Features beyond the Web Mercator latitude limit (|lat| >
-  ~85.051°) are excluded before writing; ``write_pmtiles`` warns for each
-  such feature and raises ``EmptyLayerError`` if all features in a layer
+  ~85.051°) are excluded before writing; ``write_pmtiles`` warns once for each
+  affected layer and raises ``EmptyLayerError`` if all features in a layer
   are outside that bound.  Tippecanoe uses a larger default buffer (approx
   5% of tile vs GDAL's approx 2%), which is why z-7/z-8 decoded feature
   counts can differ by 1-2 between backends without any data loss.
@@ -102,16 +103,27 @@ features.  The difference is purely a tile-clipping artifact — both backends
 produce equivalent geographic union coverage at z-0.  The ERA5 data is well
 within the Mercator extent; no features are lost.
 
-.. rubric:: Attribution — not supported in this POC
+.. rubric:: Attribution
 
-The GDAL PMTiles vector driver's ``CONF`` creation option was investigated as
-a means of embedding an ``attribution`` field in the TileJSON metadata block.
-Testing with GDAL 3.12.2 showed that the ``attribution`` key passed via
-``CONF`` is **not written to the raw archive bytes** and **not returned by
-``ds.GetMetadata()`` on read-back**.  Official PMTiles attribution would
-require rebuilding the archive with byte-level patching, which is outside the
-scope of this POC.  The parameter is intentionally omitted from the public
-API.
+An optional ``attribution`` string is stored in the archive's TileJSON metadata
+block under the ``"attribution"`` key, as required by the TileJSON 3.0 spec.
+Attribution is injected **after** GDAL writes the archive, using a pure
+in-memory format-level operation:
+
+1. The archive bytes from ``/vsimem/`` are parsed with the official
+   ``pmtiles.reader.Reader`` and ``pmtiles.tile.serialize_header`` APIs.
+2. The metadata JSON is decoded from the archive's internal compression format,
+   the ``"attribution"`` key is set, and the JSON is re-encoded with the same
+   format. GZIP output uses a stable header timestamp.
+3. The archive is reassembled in a :class:`io.BytesIO` buffer: the fixed 127-
+   byte header (with updated ``metadata_length`` and, if needed, updated
+   ``leaf_directory_offset`` / ``tile_data_offset``) is followed by the root
+   directory, the new metadata bytes, any leaf directories, and the tile data
+   section — byte-for-byte unchanged.
+
+No subprocesses, no temporary files, and no hard-coded magic offsets are used.
+When ``attribution`` is an empty string (the default), the injection step is
+skipped and the archive is written as GDAL produced it.
 
 .. rubric:: CONF per-layer zoom (future extension point)
 
@@ -154,19 +166,21 @@ order for commonly shaped geometries.
 from __future__ import annotations
 
 import datetime as _dt
+import gzip
 import json
 import math
 import tempfile
 import uuid
 import warnings
 from importlib import import_module
-from io import IOBase
+from io import BytesIO, IOBase
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 import numpy as np
 
 from geodataframe_to_pmtiles.exceptions import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileLimitViolation,
@@ -548,6 +562,7 @@ def write_pmtiles(
     max_zoom: int = DEFAULT_MAX_ZOOM,
     name: str = "",
     description: str = "",
+    attribution: str = "",
     json_fields: Collection[str] | None = None,
     on_overflow: OverflowPolicy = "error",
     simplification: float | None = None,
@@ -558,8 +573,10 @@ def write_pmtiles(
     ----------
     layers:
         Mapping of layer name → GeoDataFrame.  Every GeoDataFrame must have
-        CRS EPSG:4326 (geographic, longitude/latitude).  The mapping must not
-        be empty, and no GeoDataFrame may be empty.
+        an explicit, resolvable CRS.  GeoDataFrames not already in EPSG:4326
+        are automatically reprojected using traditional GIS X/Y axis order;
+        inputs are never mutated.  The mapping must not be empty, and no
+        GeoDataFrame may be empty.
     output:
         Destination for the archive.  Either a :class:`pathlib.Path` (written
         through a temporary file in the same directory and then atomically
@@ -572,6 +589,11 @@ def write_pmtiles(
         Optional tileset name stored in the archive metadata.
     description:
         Optional human-readable description stored in the archive metadata.
+    attribution:
+        Optional attribution string stored in the archive's TileJSON metadata
+        under the ``"attribution"`` key.  Any non-empty string is accepted;
+        Unicode and HTML are preserved exactly.  When omitted or set to an
+        empty string (the default) the key is not written to the archive.
     json_fields:
         Controls which columns are JSON-encoded when they contain ``list`` or
         ``dict`` values.
@@ -604,13 +626,18 @@ def write_pmtiles(
     MissingCRSError
         If any GeoDataFrame has no CRS set.
     UnsupportedCRSError
-        If any GeoDataFrame's CRS is not EPSG:4326.
+        If any GeoDataFrame's CRS definition cannot be resolved by the
+        installed geospatial stack.  The root cause is chained.
+    CRSTransformError
+        If the coordinate transformation to EPSG:4326 fails at runtime.
+        The root cause is chained.
     UnsupportedPropertyTypeError
         If a column contains a value that cannot be encoded as an MVT property,
         or a list/dict column is not covered by *json_fields*.
     TileOverflowError
-        If GDAL reports feature dropping or precision reduction and
-        ``on_overflow='error'``.
+        If ``on_overflow='error'``.  See module docstring for GDAL limitations.
+    TypeError
+        If *attribution* is not a string.
     ValueError
         If zoom levels are out of range or *min_zoom* > *max_zoom*.
 
@@ -622,8 +649,13 @@ def write_pmtiles(
     Boolean field subtype.  numpy scalars and ``datetime``/``pd.Timestamp``
     objects are normalised to Python native types before reaching OGR.
 
-    The default writes to GDAL's in-memory filesystem and publishes the result
-    only after its closing diagnostics confirm that neither tile limit acted.
+    Per-tile caps are fixed spike-validated POC values:
+    ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``.  They are not
+    unlimited; see the module docstring for details and the tested result.
+
+    Attribution is injected after GDAL writes the archive by re-encoding only
+    the metadata section; all MVT tile payloads are preserved byte-for-byte.
+    See the module docstring for the format-level mechanism.
     """
     import geopandas as gpd
 
@@ -648,19 +680,23 @@ def write_pmtiles(
             msg = (
                 f"Layer '{layer_name}' has no CRS.  "
                 "An explicit source CRS is required.  "
-                "Set the CRS to EPSG:4326 or reproject with "
+                "Set the CRS with gdf.set_crs('EPSG:4326') if the data are "
+                "already in WGS 84, or reproject with "
                 "gdf.to_crs('EPSG:4326') before calling write_pmtiles."
             )
             raise MissingCRSError(msg)
-        if gdf.crs.to_epsg() != 4326:
+        # Validate that the CRS definition is resolvable (catches garbage
+        # WKT or authority codes the installed stack cannot look up).
+        try:
+            gdf.crs.to_epsg()
+        except Exception as exc:
             msg = (
-                f"Layer '{layer_name}' has CRS {gdf.crs!r} "
-                f"(EPSG:{gdf.crs.to_epsg()}).  "
-                "Only EPSG:4326 (geographic WGS 84) is accepted.  "
-                "Reproject with gdf.to_crs('EPSG:4326') before calling "
-                "write_pmtiles."
+                f"Layer '{layer_name}' has a CRS that cannot be resolved by "
+                "the installed geospatial stack: "
+                f"{gdf.crs!r}.  "
+                "Provide a standard EPSG code or a well-formed WKT/PROJ string."
             )
-            raise UnsupportedCRSError(msg)
+            raise UnsupportedCRSError(msg) from exc
 
     if not (0 <= min_zoom <= 22):
         msg = f"min_zoom must be between 0 and 22, got {min_zoom}."
@@ -676,15 +712,43 @@ def write_pmtiles(
         msg = f"on_overflow must be 'error' or 'unsafe', got {on_overflow!r}."
         raise ValueError(msg)
 
+    if not isinstance(attribution, str):
+        msg = (
+            f"'attribution' must be a str, got {type(attribution).__name__!r}.  "
+            "Pass an empty string to omit attribution from the archive."
+        )
+        raise TypeError(msg)
+
     # Normalise json_fields to frozenset or None for O(1) membership tests.
     json_field_names: frozenset[str] | None = (
         None if json_fields is None else frozenset(json_fields)
     )
 
+    # ------------------------------------------------------------------
+    # Reproject layers to EPSG:4326 (does not mutate caller's GDFs).
+    # Layers already in EPSG:4326 are passed through as-is (no copy).
+    # ------------------------------------------------------------------
+    wgs84_layers: dict[str, gpd.GeoDataFrame] = {}
+    for layer_name, gdf in layers.items():
+        if gdf.crs.to_epsg() == 4326:
+            wgs84_layers[layer_name] = gdf
+        else:
+            try:
+                # GeoPandas to_crs() produces traditional GIS X/Y (lon/lat) order by default,
+                # regardless of GDAL/PyProj axis-order authority conventions.
+                wgs84_layers[layer_name] = gdf.to_crs("EPSG:4326")
+            except Exception as exc:
+                msg = (
+                    f"Layer '{layer_name}': coordinate transformation from "
+                    f"{gdf.crs!r} to EPSG:4326 failed.  "
+                    "Check that the source CRS is consistent with the data."
+                )
+                raise CRSTransformError(msg) from exc
+
     # Validate all column types up-front before any GDAL objects are created.
     # This prevents a partially-initialised dataset from being written.
     field_kinds_by_layer: dict[str, dict[str, PropertyKind]] = {}
-    for layer_name, gdf in layers.items():
+    for layer_name, gdf in wgs84_layers.items():
         field_kinds: dict[str, PropertyKind] = {}
         for col in (c for c in gdf.columns if c != gdf.geometry.name):
             field_kinds[col] = _infer_property_kind(gdf[col], json_field_names)
@@ -697,7 +761,7 @@ def write_pmtiles(
     # each layer.  GDAL silently drops them; we warn up-front and, if the
     # whole layer would be empty, raise EmptyLayerError with a clear message
     # instead of letting GDAL fail with "Invalid bounds".
-    for layer_name, gdf in layers.items():
+    for layer_name, gdf in wgs84_layers.items():
         out_of_bounds = 0
         valid_count = 0
         for geom in gdf.geometry:
@@ -767,7 +831,7 @@ def write_pmtiles(
                 srs = osr.SpatialReference()
                 srs.ImportFromEPSG(4326)
 
-                for layer_name, gdf in layers.items():
+                for layer_name, gdf in wgs84_layers.items():
                     _write_layer(
                         ds,
                         layer_name,
@@ -797,10 +861,13 @@ def write_pmtiles(
                 UserWarning,
                 stacklevel=2,
             )
-
         data = _read_vsimem(vsimem_path, gdal)
     finally:
         gdal.Unlink(vsimem_path)
+
+    # Inject attribution into the metadata section when requested.
+    if attribution:
+        data = _inject_attribution(data, attribution)
 
     if isinstance(output, Path):
         _write_path_atomic(output, data)
@@ -817,6 +884,87 @@ def write_pmtiles(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _inject_attribution(raw: bytes, attribution: str) -> bytes:
+    """Return a new PMTiles archive with *attribution* set in the metadata.
+
+    The implementation uses the official ``pmtiles.reader`` and
+    ``pmtiles.tile`` APIs to parse and re-serialise only the metadata section.
+    All tile payloads, the root directory, and leaf directories are copied
+    verbatim from *raw*; no re-tiling occurs.
+
+    The archive section layout is always::
+
+        header (127 bytes) | root directory | metadata | leaf directories | tile data
+
+    When the new metadata length differs from the original, the
+    ``metadata_length``, ``leaf_directory_offset``, and ``tile_data_offset``
+    fields in the header are updated accordingly.  All other header fields
+    (bounds, center, zoom, compression, tile type, directory counts) are
+    preserved exactly.
+
+    Parameters
+    ----------
+    raw:
+        Raw bytes of a valid PMTiles v3 archive produced by GDAL.
+    attribution:
+        Non-empty attribution string to embed under the ``"attribution"`` key.
+
+    Returns
+    -------
+    bytes
+        Raw bytes of the updated PMTiles archive.
+    """
+    from typing import cast
+
+    from pmtiles.reader import MemorySource, Reader
+    from pmtiles.tile import Compression, HeaderDict, serialize_header
+
+    get_bytes = MemorySource(raw)
+    reader = Reader(get_bytes)
+    h = reader.header()
+    metadata_bytes = get_bytes(h["metadata_offset"], h["metadata_length"])
+    if h["internal_compression"] == Compression.GZIP:
+        metadata_bytes = gzip.decompress(metadata_bytes)
+    elif h["internal_compression"] != Compression.NONE:
+        msg = (
+            "Unsupported PMTiles metadata compression "
+            f"{h['internal_compression'].name!r}; only NONE and GZIP "
+            "metadata can be rewritten safely."
+        )
+        raise RuntimeError(msg)
+
+    metadata = json.loads(metadata_bytes)
+    metadata["attribution"] = attribution
+
+    # Re-encode the metadata, preserving the original compression scheme.
+    meta_json: bytes = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+    if h["internal_compression"] == Compression.GZIP:
+        # Keep the gzip header stable so repeated writes stay byte-identical.
+        new_meta_bytes: bytes = gzip.compress(meta_json, mtime=0)
+    else:
+        new_meta_bytes = meta_json
+
+    # Compute how much the metadata section grew or shrank.
+    delta = len(new_meta_bytes) - h["metadata_length"]
+
+    # Build an updated header dict — copy all fields, then patch the offsets.
+    new_h: HeaderDict = cast("HeaderDict", dict(h))
+    new_h["metadata_length"] = len(new_meta_bytes)
+    if delta:
+        new_h["leaf_directory_offset"] = h["leaf_directory_offset"] + delta
+        new_h["tile_data_offset"] = h["tile_data_offset"] + delta
+
+    # Reassemble: header | root dir | new metadata | leaf dirs | tile data.
+    out = BytesIO()
+    out.write(serialize_header(new_h))
+    out.write(get_bytes(h["root_offset"], h["root_length"]))
+    out.write(new_meta_bytes)
+    if h["leaf_directory_length"] > 0:
+        out.write(get_bytes(h["leaf_directory_offset"], h["leaf_directory_length"]))
+    out.write(get_bytes(h["tile_data_offset"], h["tile_data_length"]))
+    return out.getvalue()
 
 
 def _write_layer(

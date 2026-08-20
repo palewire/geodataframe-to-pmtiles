@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import importlib
 import importlib.util
 import io
@@ -15,6 +17,7 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from geodataframe_to_pmtiles import (
+    CRSTransformError,
     EmptyLayerError,
     MissingCRSError,
     TileOverflowError,
@@ -799,14 +802,561 @@ def test_name_and_description_stored(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_attribution_parameter_not_accepted() -> None:
-    """write_pmtiles does not accept an attribution parameter (unsupported in POC)."""
+def test_attribution_invalid_type_raises() -> None:
+    """write_pmtiles raises TypeError when attribution is not a str."""
     with pytest.raises(TypeError, match="attribution"):
         write_pmtiles(  # type: ignore[call-overload]
             {"lyr": _points_gdf()},
             io.BytesIO(),
-            attribution="© test",  # type: ignore[call-overload]
+            attribution=123,  # type: ignore[arg-type]
+            on_overflow="unsafe",
         )
+
+
+@pytest.mark.unit
+def test_inject_attribution_unit() -> None:
+    """_inject_attribution patches metadata without touching tile payloads (no GDAL needed)."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    metadata = {
+        "name": "unit-test",
+        "description": "unit-test-desc",
+        "vector_layers": [
+            {"id": "lyr", "description": "layer", "fields": {"name": "String"}}
+        ],
+        "unknown": {"nested": ["alpha", 1]},
+    }
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        metadata,
+    )
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
+
+    # Confirm attribution is absent before injection.
+    assert "attribution" not in original_meta
+
+    # Inject attribution.
+    patched = _inject_attribution(original, "© Unit Test Ünïcödé")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    # Attribution key must be present with the exact value.
+    meta = patched_reader.metadata()
+    assert meta == {**original_meta, "attribution": "© Unit Test Ünïcödé"}
+
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+
+    assert _pmtiles_section(
+        original, original_header, "root_offset", "root_length"
+    ) == _pmtiles_section(patched, patched_header, "root_offset", "root_length")
+    assert _pmtiles_section(
+        original, original_header, "metadata_offset", "metadata_length"
+    ) != _pmtiles_section(patched, patched_header, "metadata_offset", "metadata_length")
+    assert _pmtiles_section(
+        original, original_header, "leaf_directory_offset", "leaf_directory_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "leaf_directory_offset", "leaf_directory_length"
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+    assert original != patched
+
+
+# ---------------------------------------------------------------------------
+# Attribution helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_pmtiles_metadata(data: bytes) -> dict:
+    """Parse the TileJSON metadata from a PMTiles archive in memory."""
+    from pmtiles.reader import MemorySource, Reader
+
+    return Reader(MemorySource(data)).metadata()
+
+
+def _build_pmtiles_archive(
+    tiles: list[tuple[int, bytes]],
+    metadata: dict[str, object],
+) -> bytes:
+    """Build a small PMTiles archive with the official writer."""
+    from pmtiles.tile import Compression, TileType
+    from pmtiles.writer import Writer
+
+    buf = io.BytesIO()
+    writer = Writer(buf)
+    for tile_id, tile_bytes in tiles:
+        writer.write_tile(tile_id, tile_bytes)
+    writer.finalize(
+        {
+            "tile_type": TileType.MVT,
+            "tile_compression": Compression.GZIP,
+        },
+        metadata,
+    )
+    return buf.getvalue()
+
+
+def _rewrite_metadata_as_raw_json(data: bytes) -> bytes:
+    """Return *data* with raw JSON metadata and NONE internal compression."""
+    from pmtiles.reader import MemorySource, Reader
+    from pmtiles.tile import Compression, serialize_header
+
+    reader = Reader(MemorySource(data))
+    header = reader.header()
+    metadata = reader.metadata()
+    raw_metadata = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+
+    new_header = dict(header)
+    new_header["internal_compression"] = Compression.NONE
+    new_header["metadata_length"] = len(raw_metadata)
+    delta = len(raw_metadata) - header["metadata_length"]
+    if delta:
+        new_header["leaf_directory_offset"] = header["leaf_directory_offset"] + delta
+        new_header["tile_data_offset"] = header["tile_data_offset"] + delta
+
+    out = io.BytesIO()
+    out.write(serialize_header(new_header))
+    out.write(_pmtiles_section(data, header, "root_offset", "root_length"))
+    out.write(raw_metadata)
+    if header["leaf_directory_length"] > 0:
+        out.write(
+            _pmtiles_section(
+                data, header, "leaf_directory_offset", "leaf_directory_length"
+            )
+        )
+    out.write(_pmtiles_section(data, header, "tile_data_offset", "tile_data_length"))
+    return out.getvalue()
+
+
+def _pmtiles_section(
+    data: bytes,
+    header: dict[str, object],
+    offset_key: str,
+    length_key: str,
+) -> bytes:
+    """Return a raw PMTiles section from *data* using header offsets."""
+    start = int(header[offset_key])
+    stop = start + int(header[length_key])
+    return data[start:stop]
+
+
+def _all_tile_hashes(data: bytes) -> dict[tuple[int, int, int], str]:
+    """Return a mapping of (z, x, y) → SHA-256 hex for every tile in the archive."""
+    from pmtiles.reader import MemorySource, all_tiles
+
+    return {
+        zxy: hashlib.sha256(tile_bytes).hexdigest()
+        for zxy, tile_bytes in all_tiles(MemorySource(data))
+    }
+
+
+# ---------------------------------------------------------------------------
+# Attribution tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_attribution_stored_in_metadata_path(tmp_path: Path) -> None:
+    """write_pmtiles stores attribution in metadata when output is a Path."""
+    out = tmp_path / "attr.pmtiles"
+    _write_safe({"pts": _points_gdf()}, out, attribution="Reuters, ECMWF")
+
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert meta.get("attribution") == "Reuters, ECMWF"
+
+
+@pytest.mark.integration
+def test_attribution_stored_in_metadata_bytesio() -> None:
+    """write_pmtiles stores attribution in metadata when output is a BytesIO."""
+    buf = io.BytesIO()
+    _write_safe({"pts": _points_gdf()}, buf, attribution="Reuters, ECMWF")
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == "Reuters, ECMWF"
+
+
+@pytest.mark.integration
+def test_attribution_unicode_preserved() -> None:
+    """Unicode characters in attribution are preserved exactly."""
+    unicode_attribution = "© Données — Réseau Géographique Japonais 日本語"
+    buf = io.BytesIO()
+    _write_safe({"pts": _points_gdf()}, buf, attribution=unicode_attribution)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == unicode_attribution
+
+
+@pytest.mark.integration
+def test_attribution_html_preserved() -> None:
+    """HTML markup in attribution is preserved exactly."""
+    html_attribution = '<a href="https://example.com">© Example &amp; Co.</a>'
+    buf = io.BytesIO()
+    _write_safe({"pts": _points_gdf()}, buf, attribution=html_attribution)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert meta.get("attribution") == html_attribution
+
+
+@pytest.mark.integration
+def test_attribution_omitted_key_absent() -> None:
+    """When attribution is not supplied the key is absent from the metadata."""
+    buf = io.BytesIO()
+    _write_safe({"pts": _points_gdf()}, buf)
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert "attribution" not in meta
+
+
+@pytest.mark.integration
+def test_attribution_empty_string_key_absent() -> None:
+    """When attribution is an empty string the key is absent from the metadata."""
+    buf = io.BytesIO()
+    _write_safe({"pts": _points_gdf()}, buf, attribution="")
+    buf.seek(0)
+
+    meta = _read_pmtiles_metadata(buf.read())
+    assert "attribution" not in meta
+
+
+@pytest.mark.integration
+def test_attribution_tile_hashes_unchanged() -> None:
+    """Every MVT tile payload is byte-identical before and after attribution injection."""
+    # Write without attribution first to get baseline tile hashes.
+    buf_base = io.BytesIO()
+    _write_safe({"pts": _points_gdf(), "lines": _lines_gdf()}, buf_base)
+    buf_base.seek(0)
+    base_bytes = buf_base.read()
+
+    # Write with attribution.
+    buf_attr = io.BytesIO()
+    _write_safe(
+        {"pts": _points_gdf(), "lines": _lines_gdf()},
+        buf_attr,
+        attribution="© Test attribution",
+    )
+    buf_attr.seek(0)
+    attr_bytes = buf_attr.read()
+
+    # Tile hashes must be identical; only the metadata section changes.
+    base_hashes = _all_tile_hashes(base_bytes)
+    attr_hashes = _all_tile_hashes(attr_bytes)
+
+    assert base_hashes == attr_hashes, (
+        "Some tile payloads changed after attribution injection; "
+        f"differing tiles: {set(base_hashes) ^ set(attr_hashes)}"
+    )
+    # Sanity: the archives must actually differ (the metadata section changed).
+    assert base_bytes != attr_bytes
+
+
+@pytest.mark.integration
+def test_attribution_multilayer_metadata_retained() -> None:
+    """Attribution injection preserves name, description, and vector_layers for a multilayer archive."""
+    buf = io.BytesIO()
+    _write_safe(
+        {"points": _points_gdf(), "lines": _lines_gdf()},
+        buf,
+        min_zoom=0,
+        max_zoom=2,
+        attribution="© multilayer test",
+    )
+    buf.seek(0)
+    meta = _read_pmtiles_metadata(buf.read())
+
+    assert meta.get("attribution") == "© multilayer test"
+    layer_ids = {lyr["id"] for lyr in meta.get("vector_layers", [])}
+    assert "points" in layer_ids
+    assert "lines" in layer_ids
+
+
+@pytest.mark.integration
+def test_attribution_era5_fixture(tmp_path: Path) -> None:
+    """Attribution injection works on a real-world ERA5 fixture archive."""
+    fixture = (
+        Path(__file__).with_name("fixtures")
+        / "conformance"
+        / "climate"
+        / "era5-1982-07-22-t2m-max-delta.geojson"
+    )
+    gdf = gpd.read_file(fixture).to_crs("EPSG:4326")
+
+    out = tmp_path / "era5.pmtiles"
+    write_pmtiles(
+        {"era5": gdf},
+        out,
+        min_zoom=0,
+        max_zoom=0,
+        attribution="Reuters, ECMWF",
+        on_overflow="unsafe",
+    )
+
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert meta.get("attribution") == "Reuters, ECMWF"
+    # Tiles must still be present.
+    from pmtiles.reader import MemorySource, all_tiles
+
+    tiles = list(all_tiles(MemorySource(out.read_bytes())))
+    assert len(tiles) > 0
+
+
+@pytest.mark.integration
+def test_attribution_other_metadata_fields_retained(tmp_path: Path) -> None:
+    """name, description, min/max zoom, and vector_layers are intact after attribution injection."""
+    out = tmp_path / "meta.pmtiles"
+    _write_safe(
+        {"pts": _points_gdf()},
+        out,
+        name="metadata test",
+        description="metadata desc",
+        min_zoom=0,
+        max_zoom=4,
+        attribution="Test provider",
+    )
+    # Verify via pmtiles.reader.Reader (the official API).
+    meta = _read_pmtiles_metadata(out.read_bytes())
+    assert meta.get("attribution") == "Test provider"
+    assert meta.get("name") == "metadata test"
+    assert meta.get("description") == "metadata desc"
+    assert meta.get("minzoom") == "0"
+    assert meta.get("maxzoom") == "4"
+    # vector_layers must still describe the pts layer.
+    layer_ids = [lyr["id"] for lyr in meta.get("vector_layers", [])]
+    assert "pts" in layer_ids
+
+
+@pytest.mark.unit
+def test_attribution_preserves_leaf_directory_layout() -> None:
+    """Attribution injection preserves a multi-leaf archive layout and raw tile bytes."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [
+            (zxy_to_tileid(10, i % 1024, i // 1024), f"data-{i}".encode())
+            for i in range(12_000)
+        ],
+        {"name": "leaf", "description": "leaf-desc", "vector_layers": []},
+    )
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
+    assert original_header["leaf_directory_length"] > 0
+
+    patched = _inject_attribution(original, "Leaf attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Leaf attribution",
+    }
+
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+    assert _pmtiles_section(
+        original, original_header, "root_offset", "root_length"
+    ) == _pmtiles_section(patched, patched_header, "root_offset", "root_length")
+    assert _pmtiles_section(
+        original, original_header, "leaf_directory_offset", "leaf_directory_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "leaf_directory_offset", "leaf_directory_length"
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+
+
+@pytest.mark.unit
+def test_attribution_preserves_duplicate_tile_entries() -> None:
+    """Attribution injection keeps run-length and deduplicated tile entries valid."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(5, i, 0), b"payload") for i in range(20)],
+        {"name": "dup", "description": "dup-desc", "vector_layers": []},
+    )
+    original_reader = Reader(MemorySource(original))
+    original_header = original_reader.header()
+    original_meta = original_reader.metadata()
+    assert original_header["tile_contents_count"] == 1
+
+    patched = _inject_attribution(original, "Duplicate attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Duplicate attribution",
+    }
+    assert patched_header["tile_entries_count"] == original_header["tile_entries_count"]
+    assert (
+        patched_header["tile_contents_count"] == original_header["tile_contents_count"]
+    )
+
+    delta = patched_header["metadata_length"] - original_header["metadata_length"]
+    for key, value in original_header.items():
+        if key in {"metadata_length", "leaf_directory_offset", "tile_data_offset"}:
+            continue
+        assert patched_header[key] == value
+    assert patched_header["leaf_directory_offset"] == (
+        original_header["leaf_directory_offset"] + delta
+    )
+    assert (
+        patched_header["tile_data_offset"]
+        == original_header["tile_data_offset"] + delta
+    )
+    assert _pmtiles_section(
+        original, original_header, "tile_data_offset", "tile_data_length"
+    ) == _pmtiles_section(
+        patched, patched_header, "tile_data_offset", "tile_data_length"
+    )
+    assert list(all_tiles(MemorySource(original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+
+
+@pytest.mark.unit
+def test_inject_attribution_handles_raw_metadata() -> None:
+    """_inject_attribution also works when metadata is stored as raw JSON."""
+    from pmtiles.reader import MemorySource, Reader, all_tiles
+    from pmtiles.tile import Compression, zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {
+            "name": "raw",
+            "description": "raw-desc",
+            "vector_layers": [],
+            "unknown": {"nested": ["alpha", 1]},
+        },
+    )
+    raw_original = _rewrite_metadata_as_raw_json(original)
+    original_reader = Reader(MemorySource(raw_original))
+    original_header = original_reader.header()
+    assert original_header["internal_compression"] == Compression.NONE
+    original_meta = original_reader.metadata()
+
+    patched = _inject_attribution(raw_original, "Raw attribution")
+    patched_reader = Reader(MemorySource(patched))
+    patched_header = patched_reader.header()
+
+    assert patched_header["internal_compression"] == Compression.NONE
+    assert patched_reader.metadata() == {
+        **original_meta,
+        "attribution": "Raw attribution",
+    }
+    assert list(all_tiles(MemorySource(raw_original))) == list(
+        all_tiles(MemorySource(patched))
+    )
+
+
+@pytest.mark.unit
+def test_inject_attribution_rejects_unsupported_metadata_compression() -> None:
+    """_inject_attribution refuses archives it cannot rewrite safely."""
+    from pmtiles.reader import MemorySource, Reader
+    from pmtiles.tile import Compression, serialize_header, zxy_to_tileid
+
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {"name": "bad", "description": "", "vector_layers": []},
+    )
+    reader = Reader(MemorySource(original))
+    header = dict(reader.header())
+    header["internal_compression"] = Compression.BROTLI
+
+    unsupported = io.BytesIO()
+    unsupported.write(serialize_header(header))
+    unsupported.write(
+        _pmtiles_section(original, reader.header(), "root_offset", "root_length")
+    )
+    unsupported.write(
+        _pmtiles_section(
+            original, reader.header(), "metadata_offset", "metadata_length"
+        )
+    )
+    unsupported.write(
+        _pmtiles_section(
+            original, reader.header(), "tile_data_offset", "tile_data_length"
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="metadata compression"):
+        _inject_attribution(unsupported.getvalue(), "Unsupported")
+
+
+@pytest.mark.unit
+def test_inject_attribution_gzip_output_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated gzip rewrites stay byte-identical even if the clock changes."""
+    from pmtiles.tile import zxy_to_tileid
+
+    from geodataframe_to_pmtiles import _writer as writer_module
+    from geodataframe_to_pmtiles._writer import _inject_attribution
+
+    original = _build_pmtiles_archive(
+        [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
+        {"name": "deterministic", "description": "", "vector_layers": []},
+    )
+
+    times = iter([1_700_000_000, 1_700_000_123])
+    monkeypatch.setattr(writer_module.gzip.time, "time", lambda: next(times))
+
+    first = _inject_attribution(original, "Deterministic attribution")
+    second = _inject_attribution(original, "Deterministic attribution")
+
+    assert first == second
 
 
 # ---------------------------------------------------------------------------
@@ -975,12 +1525,263 @@ def test_missing_crs_raises() -> None:
         write_pmtiles({"lyr": gdf}, io.BytesIO())
 
 
-@pytest.mark.unit
-def test_wrong_crs_raises() -> None:
-    """A GeoDataFrame in a non-EPSG:4326 CRS raises UnsupportedCRSError."""
+@pytest.mark.integration
+def test_wrong_crs_no_longer_raises_auto_reprojects() -> None:
+    """A GeoDataFrame in a non-EPSG:4326 CRS is now auto-reprojected (no error)."""
     gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
-    with pytest.raises(UnsupportedCRSError):
+    # Should not raise — EPSG:3857 is reprojected to EPSG:4326 automatically.
+    buf = io.BytesIO()
+    write_pmtiles({"lyr": gdf}, buf)
+    assert buf.tell() > 0
+
+
+@pytest.mark.unit
+def test_unresolvable_crs_raises_unsupported_crs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CRS lookup failure raises UnsupportedCRSError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object) -> int:
+        raise RuntimeError("bad crs")
+
+    monkeypatch.setattr(type(gdf.crs), "to_epsg", _boom)
+
+    with pytest.raises(UnsupportedCRSError, match="cannot be resolved") as excinfo:
         write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "bad crs" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
+def test_transform_failure_raises_crs_transform_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reprojection failure raises CRSTransformError with the original cause chained."""
+    gdf = gpd.GeoDataFrame({"x": [1]}, geometry=[Point(0, 0)], crs="EPSG:3857")
+
+    def _boom(self: object, *args: object, **kwargs: object) -> gpd.GeoDataFrame:
+        raise ValueError("transform failed")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_crs", _boom)
+
+    with pytest.raises(CRSTransformError, match="coordinate transformation") as excinfo:
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "transform failed" in str(excinfo.value.__cause__)
+
+
+@pytest.mark.unit
+def test_non_mutation_of_input_gdf() -> None:
+    """write_pmtiles does not mutate the caller's GeoDataFrame CRS or geometries.
+
+    This test does not require GDAL: reprojection is performed on a copy inside
+    write_pmtiles via gdf.to_crs(), which must not modify the input.  If GDAL is
+    unavailable the call raises RuntimeError after the reprojection step, but the
+    check happens before writing.
+    """
+    gdf = gpd.GeoDataFrame(
+        {"name": ["a", "b"]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0)],
+        crs="EPSG:3857",
+    )
+    original_crs = gdf.crs
+    original_geom = list(gdf.geometry)
+    with contextlib.suppress(RuntimeError):
+        # GDAL not available in this environment; mutation check still valid
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+    assert gdf.crs == original_crs, "CRS of input GeoDataFrame must not be changed"
+    assert list(gdf.geometry) == original_geom, (
+        "Geometries of input GDF must not be changed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CRS reprojection — semantic decoder tests
+# ---------------------------------------------------------------------------
+
+
+def _point_gdf_4326() -> gpd.GeoDataFrame:
+    """A known point in EPSG:4326 (lon/lat)."""
+    return gpd.GeoDataFrame(
+        {"label": ["origin"]},
+        geometry=[Point(10.0, 52.0)],  # lon=10, lat=52
+        crs="EPSG:4326",
+    )
+
+
+def _point_gdf_3857() -> gpd.GeoDataFrame:
+    """The same point as above reprojected to EPSG:3857."""
+    return _point_gdf_4326().to_crs("EPSG:3857")
+
+
+def _point_gdf_projected() -> gpd.GeoDataFrame:
+    """The same point in a local projected CRS (ETRS89 / UTM zone 32N)."""
+    return _point_gdf_4326().to_crs("EPSG:25832")
+
+
+def _point_gdf_non_epsg() -> gpd.GeoDataFrame:
+    """The same point expressed via a non-EPSG PROJ string."""
+    import pyproj
+
+    crs_obj = pyproj.CRS.from_proj4("+proj=longlat +datum=WGS84 +no_defs")
+    return gpd.GeoDataFrame(
+        {"label": ["origin"]},
+        geometry=[Point(10.0, 52.0)],
+        crs=crs_obj,
+    )
+
+
+@pytest.mark.integration
+def test_epsg4326_source_decodes_correctly(tmp_path: Path) -> None:
+    """EPSG:4326 source (baseline) decodes to a Point feature with expected property."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs4326.pmtiles"
+    _write_safe({"pts": _point_gdf_4326()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+    assert "label" in summary["property_keys"]
+
+
+@pytest.mark.integration
+def test_epsg3857_source_decodes_equivalently(tmp_path: Path) -> None:
+    """EPSG:3857 source is auto-reprojected; decoded result is semantically equivalent to EPSG:4326."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs3857.pmtiles"
+    _write_safe({"pts": _point_gdf_3857()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+    assert "label" in summary["property_keys"]
+
+
+@pytest.mark.integration
+def test_projected_crs_decodes_equivalently(tmp_path: Path) -> None:
+    """A local projected CRS (EPSG:25832) is auto-reprojected; result decodes correctly."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs25832.pmtiles"
+    _write_safe({"pts": _point_gdf_projected()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+
+
+@pytest.mark.integration
+def test_non_epsg_proj_string_decodes_correctly(tmp_path: Path) -> None:
+    """A non-EPSG PROJ string CRS is accepted and decoded correctly."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "crs_proj.pmtiles"
+    _write_safe({"pts": _point_gdf_non_epsg()}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "pts" in layers
+    summary = summarize_features(layers["pts"]["features"])
+    assert summary["feature_count"] >= 1
+    assert "Point" in summary["geometry_types"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("source_factory", "label"),
+    [
+        (_point_gdf_3857, "epsg3857"),
+        (_point_gdf_projected, "epsg25832"),
+        (_point_gdf_non_epsg, "proj"),
+    ],
+)
+def test_auto_reprojected_sources_match_pretransformed_4326(
+    tmp_path: Path,
+    source_factory,
+    label: str,
+) -> None:
+    """Auto-reprojected sources decode exactly like a pre-transformed EPSG:4326 input."""
+    from .pmtiles_semantics import read_pmtiles_archive
+
+    expected = tmp_path / f"expected-{label}.pmtiles"
+    actual = tmp_path / f"actual-{label}.pmtiles"
+    _write_safe({"pts": _point_gdf_4326()}, expected, min_zoom=0, max_zoom=0)
+    _write_safe({"pts": source_factory()}, actual, min_zoom=0, max_zoom=0)
+
+    expected_features = read_pmtiles_archive(expected, z=0, x=0, y=0)[2]["pts"][
+        "features"
+    ]
+    actual_features = read_pmtiles_archive(actual, z=0, x=0, y=0)[2]["pts"]["features"]
+
+    assert actual_features == expected_features
+
+
+@pytest.mark.integration
+def test_mixed_crs_layers_decode_correctly(tmp_path: Path) -> None:
+    """Mixed-CRS layers (EPSG:4326 + EPSG:3857) each decode to the correct geometry type."""
+    from .pmtiles_semantics import read_pmtiles_archive, summarize_features
+
+    out = tmp_path / "mixed_crs.pmtiles"
+    _write_safe(
+        {
+            "pts_4326": _point_gdf_4326(),
+            "pts_3857": _point_gdf_3857(),
+        },
+        out,
+        min_zoom=0,
+        max_zoom=0,
+    )
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    for layer_name in ("pts_4326", "pts_3857"):
+        assert layer_name in layers, f"Layer {layer_name!r} missing from decoded tile"
+        summary = summarize_features(layers[layer_name]["features"])
+        assert summary["feature_count"] >= 1
+        assert "Point" in summary["geometry_types"]
+
+    assert layers["pts_3857"]["features"] == layers["pts_4326"]["features"]
+
+
+@pytest.mark.integration
+def test_reprojection_preserves_property_values(tmp_path: Path) -> None:
+    """Property values survive reprojection from EPSG:3857 to EPSG:4326 unchanged."""
+    from .pmtiles_semantics import read_pmtiles_archive
+
+    gdf = gpd.GeoDataFrame(
+        {"name": ["alpha", "beta"], "score": [42, 99]},
+        geometry=[Point(0.0, 0.0), Point(1_000_000.0, 1_000_000.0)],
+        crs="EPSG:3857",
+    )
+    out = tmp_path / "repro_props.pmtiles"
+    _write_safe({"lyr": gdf}, out, min_zoom=0, max_zoom=0)
+    _, _, layers = read_pmtiles_archive(out, z=0, x=0, y=0)
+    assert "lyr" in layers
+    names = {f["properties"].get("name") for f in layers["lyr"]["features"]}
+    assert {"alpha", "beta"}.issubset(names)
+
+
+@pytest.mark.unit
+def test_non_mutation_input_geometry_unchanged() -> None:
+    """Reprojection from EPSG:3857 does not change the original geometry objects."""
+    from shapely.geometry import Point as ShapelyPoint
+
+    orig_geom = ShapelyPoint(1_000_000.0, 6_000_000.0)
+    gdf = gpd.GeoDataFrame(
+        {"x": [1]},
+        geometry=[orig_geom],
+        crs="EPSG:3857",
+    )
+    with contextlib.suppress(RuntimeError):
+        # GDAL not available; mutation check is still valid
+        write_pmtiles({"lyr": gdf}, io.BytesIO())
+    # Original geometry must be unchanged.
+    assert gdf.geometry.iloc[0].equals(orig_geom)
+    assert gdf.crs.to_epsg() == 3857
 
 
 @pytest.mark.unit

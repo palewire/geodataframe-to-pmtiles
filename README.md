@@ -24,8 +24,9 @@ import geopandas as gpd
 from pathlib import Path
 from geodataframe_to_pmtiles import write_pmtiles
 
-points = gpd.read_file("points.geojson").to_crs("EPSG:4326")
-polygons = gpd.read_file("polys.geojson").to_crs("EPSG:4326")
+# Any explicit CRS is accepted — reprojection to EPSG:4326 is automatic.
+points = gpd.read_file("points.geojson")
+polygons = gpd.read_file("polys.geojson")
 
 write_pmtiles(
     {"points": points, "polygons": polygons},
@@ -34,7 +35,17 @@ write_pmtiles(
     max_zoom=8,
     name="my map",
     description="Points and polygons",
+    on_overflow="unsafe",  # explicit opt-out if you accept tile-level risk
+    attribution="© OpenStreetMap contributors",  # optional; stored in TileJSON metadata
 )
+```
+
+GeoDataFrames passed to `write_pmtiles()` must already carry a CRS. If your
+source format does not store CRS metadata, set one before writing:
+
+```python
+points = points.set_crs("EPSG:4326")
+polygons = polygons.set_crs("EPSG:4326")
 ```
 
 Write to a `BytesIO` stream instead of a file:
@@ -63,12 +74,13 @@ the full API reference.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `layers` | `dict[str, GeoDataFrame]` | required | Layer name → GeoDataFrame mapping. All GDFs must be **EPSG:4326**. |
+| `layers` | `dict[str, GeoDataFrame]` | required | Layer name → GeoDataFrame mapping. Any explicit CRS accepted; non-EPSG:4326 layers are auto-reprojected. Inputs must still carry a CRS and are not mutated. |
 | `output` | `Path \| BinaryIO` | required | Destination path or binary stream. |
 | `min_zoom` | `int` | `0` | Archive-wide minimum zoom level (0-22). |
 | `max_zoom` | `int` | `8` | Archive-wide maximum zoom level (0-22). |
 | `name` | `str` | `""` | Tileset name stored in archive metadata. |
 | `description` | `str` | `""` | Human-readable description in archive metadata. |
+| `attribution` | `str` | `""` | Attribution string stored in TileJSON metadata under `"attribution"`. Unicode and HTML preserved. Omit or pass `""` to skip. |
 | `json_fields` | `Collection[str] \| None` | `None` | Columns to JSON-encode (list/dict values). `None` auto-encodes all; explicit set restricts to named columns only. |
 | `on_overflow` | `"error" \| "unsafe"` | `"error"` | Reject detected GDAL tile-limit actions, or explicitly accept them. |
 | `simplification` | `float \| None` | `None` | Geometry simplification tolerance (tile units). `None` = disabled. |
@@ -98,7 +110,8 @@ values.
 |---|---|
 | `EmptyLayerError` | `layers` is empty or a GDF has no features. |
 | `MissingCRSError` | A GDF has no CRS set (explicit source CRS required). |
-| `UnsupportedCRSError` | A GDF's CRS is not EPSG:4326. |
+| `UnsupportedCRSError` | A GDF's CRS definition cannot be resolved by the installed stack (chained from root cause). |
+| `CRSTransformError` | Coordinate transformation to EPSG:4326 failed at runtime (chained from root cause). |
 | `UnsupportedPropertyTypeError` | A column has an unrecognised type, or a list/dict column not in `json_fields`. |
 | `TileOverflowError` | GDAL reported a feature-cap rebuild or size-driven geometry recode. The destination is unchanged. |
 
