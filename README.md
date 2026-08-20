@@ -20,9 +20,9 @@ cd geodataframe-to-pmtiles
 uv sync
 ```
 
-> **Note:** The library itself is pure Python, but `write()` needs a
+> **Note:** The library itself is pure Python, but `gpm.write()` needs a
 > native GDAL runtime with the PMTiles driver available. The package imports
-> without GDAL; calling the writer without it raises a clear `RuntimeError`.
+> without GDAL; calling `gpm.write()` without it raises a clear `RuntimeError`.
 > In CI we install GDAL from conda-forge. Locally, install GDAL separately via
 > conda-forge, Homebrew, or your operating system package manager before
 > writing PMTiles archives.
@@ -91,7 +91,7 @@ public site will be available at
 `https://palewi.re/docs/geodataframe-to-pmtiles/`. Until then, this README and
 [`docs/api.md`](docs/api.md) provide the current API reference.
 
-### `write` — two call forms
+### `gpm.write` — two call forms
 
 **Mapping form** — multiple named layers:
 
