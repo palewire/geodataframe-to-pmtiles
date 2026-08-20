@@ -1,12 +1,12 @@
 """Write PMTiles vector archives from GeoPandas GeoDataFrames using GDAL.
 
-This module provides the main ``write_pmtiles`` function, which is the sole
+This module provides the main ``write`` function, which is the sole
 public entry point for the library.  The GDAL PMTiles vector driver is used
 directly; no subprocesses are spawned and no temporary files are written to
 disk.  Intermediate data lives in GDAL's in-memory virtual filesystem
 (``/vsimem/``) for the duration of the call.
 
-The package imports without GDAL present.  ``write_pmtiles`` raises a clear
+The package imports without GDAL present.  ``write`` raises a clear
 ``RuntimeError`` if the native GDAL runtime or PMTiles driver is unavailable at
 call time.
 
@@ -63,7 +63,7 @@ where every feature or coordinate matters.
 
 The PMTiles/MVT tile scheme uses Web Mercator (EPSG:3857), which maps only
 the latitude range **±85.05112877980659°** (the Google/OSM slippy-map limit,
-referred to as ``WEB_MERCATOR_LAT_LIMIT`` in this module).  ``write_pmtiles``
+referred to as ``WEB_MERCATOR_LAT_LIMIT`` in this module).  ``write``
 reprojects every input layer to EPSG:4326 before passing it to the GDAL PMTiles
 driver.
 
@@ -89,7 +89,7 @@ part in the appropriate tile column.
 * ``BUFFER = 80`` — extra tile units included beyond the tile edge; a feature
   is included in a tile if it falls within ``EXTENT + BUFFER`` of the tile
   origin.  Features beyond the Web Mercator latitude limit (|lat| >
-  ~85.051°) are excluded before writing; ``write_pmtiles`` warns once for each
+  ~85.051°) are excluded before writing; ``write`` warns once for each
   affected layer and raises ``EmptyLayerError`` if all features in a layer
   are outside that bound.  Tippecanoe uses a larger default buffer (approx
   5% of tile vs GDAL's approx 2%), which is why z-7/z-8 decoded feature
@@ -174,7 +174,7 @@ import warnings
 from importlib import import_module
 from io import BytesIO, IOBase
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, overload
 
 import numpy as np
 
@@ -189,7 +189,7 @@ from geodataframe_to_pmtiles.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Mapping
 
     import geopandas as gpd
 
@@ -226,7 +226,7 @@ _OUT_OF_BOUNDS_WARNING = (
     f"Mercator latitude extent (±{WEB_MERCATOR_LAT_LIMIT}°) and will not appear "
     "in the archive.  The GDAL PMTiles driver silently drops such features; "
     "this library detects and reports them up-front.  Clip or drop the affected "
-    "geometries so they fall within ±85.05° latitude before calling write_pmtiles."
+    "geometries so they fall within ±85.05° latitude before calling gpm.write."
 )
 
 
@@ -262,7 +262,7 @@ def _load_gdal_modules() -> tuple[Any, Any, Any]:
             "GDAL Python bindings are required to write PMTiles. Install a "
             "matching native GDAL runtime and Python bindings in the active "
             "environment (for example via conda-forge, Homebrew, or your "
-            "system package manager), then call write_pmtiles again."
+            "system package manager), then call gpm.write again."
         )
         raise RuntimeError(msg) from exc
 
@@ -558,10 +558,50 @@ def _tile_coordinates(message: str) -> tuple[int, int, int] | None:
     return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
-def write_pmtiles(
-    layers: dict[str, gpd.GeoDataFrame],
+# ---------------------------------------------------------------------------
+# Public overload signatures for gpm.write
+# ---------------------------------------------------------------------------
+
+
+@overload
+def write(
+    layers: Mapping[str, gpd.GeoDataFrame],
     output: Path | BinaryIO,
     *,
+    layer: None = None,
+    min_zoom: int = ...,
+    max_zoom: int = ...,
+    name: str = ...,
+    description: str = ...,
+    attribution: str = ...,
+    json_fields: Collection[str] | None = ...,
+    on_overflow: OverflowPolicy = ...,
+    simplification: float | None = ...,
+) -> None: ...
+
+
+@overload
+def write(
+    layers: gpd.GeoDataFrame,
+    output: Path | BinaryIO,
+    *,
+    layer: str,
+    min_zoom: int = ...,
+    max_zoom: int = ...,
+    name: str = ...,
+    description: str = ...,
+    attribution: str = ...,
+    json_fields: Collection[str] | None = ...,
+    on_overflow: OverflowPolicy = ...,
+    simplification: float | None = ...,
+) -> None: ...
+
+
+def write(
+    layers: Mapping[str, gpd.GeoDataFrame] | gpd.GeoDataFrame,
+    output: Path | BinaryIO,
+    *,
+    layer: str | None = None,
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
     name: str = "",
@@ -573,18 +613,35 @@ def write_pmtiles(
 ) -> None:
     """Write a PMTiles vector archive from one or more GeoDataFrames.
 
+    Two calling forms are supported:
+
+    **Mapping form** — write multiple named layers::
+
+        gpm.write({"contours": contours, "data": points}, "map.pmtiles")
+
+    **Single-frame form** — write one layer with an explicit name::
+
+        gpm.write(contours, "map.pmtiles", layer="contours")
+
     Parameters
     ----------
     layers:
-        Mapping of layer name → GeoDataFrame.  Every GeoDataFrame must have
-        an explicit, resolvable CRS.  GeoDataFrames not already in EPSG:4326
-        are automatically reprojected using traditional GIS X/Y axis order;
-        inputs are never mutated.  The mapping must not be empty, and no
-        GeoDataFrame may be empty.
+        Either a :class:`~collections.abc.Mapping` of layer name →
+        :class:`~geopandas.GeoDataFrame`, or a single
+        :class:`~geopandas.GeoDataFrame` (``layer`` is required in the
+        latter case).  Every GeoDataFrame must have an explicit, resolvable
+        CRS.  GeoDataFrames not already in EPSG:4326 are automatically
+        reprojected using traditional GIS X/Y axis order; inputs are never
+        mutated.  The mapping must not be empty, and no GeoDataFrame may be
+        empty.
     output:
         Destination for the archive.  Either a :class:`pathlib.Path` (written
         through a temporary file in the same directory and then atomically
         replaced) or any binary-writable stream such as :class:`io.BytesIO`.
+    layer:
+        Layer name for the single-frame form.  Required when *layers* is a
+        :class:`~geopandas.GeoDataFrame`; must be omitted (or ``None``) when
+        *layers* is a mapping.
     min_zoom:
         Archive-wide minimum zoom level (0-22, default 0).
     max_zoom:
@@ -625,6 +682,9 @@ def write_pmtiles(
 
     Raises
     ------
+    TypeError
+        If *layers* is a :class:`~geopandas.GeoDataFrame` and *layer* is
+        omitted, or if *layers* is a mapping and *layer* is provided.
     EmptyLayerError
         If *layers* is empty or any GeoDataFrame has zero features.
     MissingCRSError
@@ -664,6 +724,56 @@ def write_pmtiles(
     import geopandas as gpd
 
     # ------------------------------------------------------------------
+    # Dispatch: single-GDF form vs. mapping form
+    # ------------------------------------------------------------------
+    if isinstance(layers, gpd.GeoDataFrame):
+        if layer is None:
+            msg = (
+                "Pass a layer name when writing a single GeoDataFrame: "
+                "gpm.write(gdf, output, layer='my_layer')."
+            )
+            raise TypeError(msg)
+        layers_mapping: dict[str, gpd.GeoDataFrame] = {layer: layers}
+    else:
+        if layer is not None:
+            msg = (
+                "The 'layer' argument must not be provided when 'layers' is a "
+                "mapping; the layer names are taken from the mapping keys."
+            )
+            raise TypeError(msg)
+        layers_mapping = dict(layers)
+
+    _write_impl(
+        layers_mapping,
+        output,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        name=name,
+        description=description,
+        attribution=attribution,
+        json_fields=json_fields,
+        on_overflow=on_overflow,
+        simplification=simplification,
+    )
+
+
+def _write_impl(
+    layers: dict[str, gpd.GeoDataFrame],
+    output: Path | BinaryIO,
+    *,
+    min_zoom: int = DEFAULT_MIN_ZOOM,
+    max_zoom: int = DEFAULT_MAX_ZOOM,
+    name: str = "",
+    description: str = "",
+    attribution: str = "",
+    json_fields: Collection[str] | None = None,
+    on_overflow: OverflowPolicy = "error",
+    simplification: float | None = None,
+) -> None:
+    """Internal implementation; called by :func:`write` after dispatch."""
+    import geopandas as gpd
+
+    # ------------------------------------------------------------------
     # Input validation
     # ------------------------------------------------------------------
     if not layers:
@@ -686,7 +796,7 @@ def write_pmtiles(
                 "An explicit source CRS is required.  "
                 "Set the CRS with gdf.set_crs('EPSG:4326') if the data are "
                 "already in WGS 84, or reproject with "
-                "gdf.to_crs('EPSG:4326') before calling write_pmtiles."
+                "gdf.to_crs('EPSG:4326') before calling gpm.write."
             )
             raise MissingCRSError(msg)
         # Validate that the CRS definition is resolvable (catches garbage
@@ -794,9 +904,7 @@ def write_pmtiles(
             )
             if out_of_bounds:
                 msg += f" after excluding {out_of_bounds} out-of-bounds feature(s)"
-            msg += (
-                ". Clip or drop the affected geometries before calling write_pmtiles."
-            )
+            msg += ". Clip or drop the affected geometries before calling gpm.write."
             raise EmptyLayerError(msg)
 
     # Import GDAL only after the pure-Python validation has succeeded.

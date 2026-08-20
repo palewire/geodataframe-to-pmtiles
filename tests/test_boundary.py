@@ -43,7 +43,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygon, box
 
-from geodataframe_to_pmtiles import EmptyLayerError, write_pmtiles
+from geodataframe_to_pmtiles import EmptyLayerError, write
 from geodataframe_to_pmtiles._writer import (
     WEB_MERCATOR_LAT_LIMIT,
     _is_outside_mercator_extent,
@@ -66,9 +66,7 @@ def _write(gdf: gpd.GeoDataFrame, *, max_zoom: int = 0, layer: str = "pts") -> b
     buf = io.BytesIO()
     with warnings.catch_warnings():
         warnings.simplefilter("always")
-        write_pmtiles(
-            {layer: gdf}, buf, min_zoom=0, max_zoom=max_zoom, on_overflow="unsafe"
-        )
+        write({layer: gdf}, buf, min_zoom=0, max_zoom=max_zoom, on_overflow="unsafe")
     return buf.getvalue()
 
 
@@ -78,9 +76,7 @@ def _write_capturing_warnings(
     buf = io.BytesIO()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        write_pmtiles(
-            {layer: gdf}, buf, min_zoom=0, max_zoom=max_zoom, on_overflow="unsafe"
-        )
+        write({layer: gdf}, buf, min_zoom=0, max_zoom=max_zoom, on_overflow="unsafe")
     return buf.getvalue(), [w for w in caught if issubclass(w.category, UserWarning)]
 
 
@@ -90,9 +86,7 @@ def _out_of_bounds_warns(gdf: gpd.GeoDataFrame) -> list[str]:
         warnings.simplefilter("always")
         try:
             buf = io.BytesIO()
-            write_pmtiles(
-                {"pts": gdf}, buf, min_zoom=0, max_zoom=0, on_overflow="unsafe"
-            )
+            write({"pts": gdf}, buf, min_zoom=0, max_zoom=0, on_overflow="unsafe")
         except WritePMTilesError:
             pass
     return [
@@ -108,7 +102,7 @@ def _raises_empty_layer_for_out_of_bounds(
 ) -> None:
     """Helper: assert EmptyLayerError is raised for all-out-of-bounds GDF."""
     buf = io.BytesIO()
-    write_pmtiles({layer: gdf}, buf, min_zoom=0, max_zoom=0, on_overflow="unsafe")
+    write({layer: gdf}, buf, min_zoom=0, max_zoom=0, on_overflow="unsafe")
 
 
 def _point_gdf(lon: float, lat: float) -> gpd.GeoDataFrame:
@@ -215,7 +209,7 @@ def test_point_just_inside_south_limit_appears() -> None:
 def test_point_outside_north_limit_warns_and_is_excluded() -> None:
     """A point beyond the north limit emits UserWarning and raises EmptyLayerError.
 
-    When a layer has no features within the Web Mercator extent, write_pmtiles
+    When a layer has no features within the Web Mercator extent, write
     emits a UserWarning (listing the count of out-of-bounds features) and then
     raises EmptyLayerError rather than letting GDAL fail silently or with an
     unhelpful "Invalid bounds" message.
@@ -332,7 +326,7 @@ def test_all_null_geometry_raises_empty_layer_error() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(EmptyLayerError):
-        write_pmtiles(layers={"pts": gdf}, output=io.BytesIO())
+        write(layers={"pts": gdf}, output=io.BytesIO())
 
 
 def test_empty_geometry_raises_empty_layer_error() -> None:
@@ -343,7 +337,7 @@ def test_empty_geometry_raises_empty_layer_error() -> None:
         crs="EPSG:4326",
     )
     with pytest.raises(EmptyLayerError):
-        write_pmtiles(layers={"pts": gdf}, output=io.BytesIO())
+        write(layers={"pts": gdf}, output=io.BytesIO())
 
 
 @pytest.mark.integration
@@ -355,7 +349,7 @@ def test_all_out_of_bounds_layer_leaves_path_unchanged(tmp_path: Path) -> None:
     gdf = _point_gdf(0, WEB_MERCATOR_LAT_LIMIT + 0.001)
 
     with pytest.raises(EmptyLayerError):
-        write_pmtiles({"pts": gdf}, out, min_zoom=0, max_zoom=0, on_overflow="unsafe")
+        write({"pts": gdf}, out, min_zoom=0, max_zoom=0, on_overflow="unsafe")
 
     assert out.read_bytes() == b"keep this archive"
 
@@ -368,7 +362,7 @@ def test_all_out_of_bounds_layer_leaves_stream_unchanged() -> None:
     gdf = _point_gdf(0, WEB_MERCATOR_LAT_LIMIT + 0.001)
 
     with pytest.raises(EmptyLayerError):
-        write_pmtiles(
+        write(
             {"pts": gdf},
             stream,
             min_zoom=0,
@@ -413,7 +407,7 @@ def test_antimeridian_split_multipolygon_appears_on_both_sides() -> None:
     multi = MultiPolygon([east, west])
     gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[multi], crs="EPSG:4326")
     buf = io.BytesIO()
-    write_pmtiles({"polys": gdf}, buf, min_zoom=0, max_zoom=2, on_overflow="unsafe")
+    write({"polys": gdf}, buf, min_zoom=0, max_zoom=2, on_overflow="unsafe")
     data = buf.getvalue()
 
     # z=1: east side in (1, 0), west side in (0, 0)
@@ -572,7 +566,7 @@ def test_polar_points_fixture_boundary_semantics(tmp_path: Path) -> None:
     out = tmp_path / "polar_points.pmtiles"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        write_pmtiles(
+        write(
             {"pts": gdf},
             out,
             min_zoom=0,
@@ -628,7 +622,7 @@ def test_era5_z0_fragment_count_is_higher_than_tippecanoe() -> None:
     assert len(gdf) == 329  # provenance-confirmed count
 
     buf = io.BytesIO()
-    write_pmtiles(
+    write(
         {"era5": gdf},
         buf,
         min_zoom=0,

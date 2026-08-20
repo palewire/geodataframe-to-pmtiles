@@ -15,7 +15,7 @@ import pytest
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
-from geodataframe_to_pmtiles import write_pmtiles
+from geodataframe_to_pmtiles import write
 
 from .pmtiles_semantics import (
     feature_property_sequence,
@@ -75,7 +75,7 @@ def _write_archive(
     name: str,
     description: str,
 ) -> None:
-    write_pmtiles(
+    write(
         layers,
         output,
         min_zoom=0,

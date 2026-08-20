@@ -9,7 +9,7 @@ GDAL's native PMTiles vector driver — no subprocesses, no temporary files.
 - `pyproject.toml`: Package metadata and tool configuration.
 - `src/geodataframe_to_pmtiles/`: Library source (src layout).
   - `__init__.py`: Public API exports.
-  - `_writer.py`: Core `write_pmtiles` implementation.
+  - `_writer.py`: Core `write` implementation.
   - `exceptions.py`: Custom exception hierarchy.
   - `py.typed`: PEP 561 marker for typed packages.
 - `tests/`: pytest tests.
@@ -41,12 +41,12 @@ make coverage PACKAGE=geodataframe_to_pmtiles
 
 ## Public API
 
-The single public entry point is `write_pmtiles`:
+The single public entry point is `write`:
 
 ```python
-from geodataframe_to_pmtiles import write_pmtiles
+from geodataframe_to_pmtiles import write
 
-write_pmtiles(
+write(
     layers={"layer_name": gdf},  # dict[str, GeoDataFrame], all must be EPSG:4326
     output=Path("out.pmtiles"),  # Path or binary stream
     min_zoom=0,
@@ -60,7 +60,7 @@ write_pmtiles(
 
 ## GDAL Dependency
 
-`write_pmtiles()` needs a native GDAL runtime with the PMTiles driver
+`write()` needs a native GDAL runtime with the PMTiles driver
 available, but the package itself imports without GDAL.  The CI workflow
 installs GDAL from conda-forge and runs `uv` against that active environment.
 For local development, install GDAL separately via conda-forge, Homebrew, or
@@ -69,7 +69,7 @@ your system package manager before running the archive-writing tests.
 ## Known Design Limitations
 
 - **Silent tile drops**: The GDAL PMTiles driver silently drops features when a
-  tile exceeds `MAX_SIZE` or `MAX_FEATURES`.  `write_pmtiles` sets very large
+  tile exceeds `MAX_SIZE` or `MAX_FEATURES`.  `write` sets very large
   limits but cannot guarantee an error on overflow.
 - **Feature count inflation**: Reading back a PMTiles archive reports more
   features than were written because MVT stores features in every intersecting
