@@ -50,15 +50,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   internal list handling is never allowed to leak through.
 - `on_overflow: Literal["error", "unsafe"]` parameter (default
   `"error"`) for the GDAL tile-level drop policy.  Fixed spike-validated
-  per-tile caps: `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB` (200,001 z0
-  features preserved in 630,430 bytes).  `MAX_FEATURES=0` does not disable
-  the limit.  `"error"` raises `TileOverflowError` before writing; `"unsafe"`
-  keeps writing after GDAL reports a tile-limit action.
+  per-tile caps: `MAX_FEATURES=300,000` and `MAX_SIZE=10 MB`. `"error"`
+  raises `TileOverflowError` before writing; `"unsafe"` keeps writing after
+  GDAL reports a tile-limit action.
 - `TileOverflowError` exception documenting tested POC caps, GDAL's
   silent-drop limitation, and why post-write enforcement is not possible.
-- Explicit CRS validation: only EPSG:4326 is accepted; `MissingCRSError`
-  (explicit source CRS required) and `UnsupportedCRSError` are raised for
-  invalid inputs.
+- Explicit CRS validation: `MissingCRSError` is raised when a source CRS is
+  absent, and `UnsupportedCRSError` is raised when its definition cannot be
+  resolved.
 - `EmptyLayerError` for empty layer mappings or GeoDataFrames with no features.
 - Deterministic property normalisation: numpy scalars and
   `datetime`/`pd.Timestamp` normalised to Python native types before OGR
@@ -70,15 +69,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `simplification` keyword argument to enable GDAL-side geometry simplification
   (disabled by default).
 - Honest documentation of known limitations: silent tile-level feature drops
-  (GDAL cannot signal overflow), feature count inflation when reading back (MVT
-  stores features per tile), attribution unsupported (tested: GDAL 3.12.2 does
-  not write `attribution` from `CONF` option to archive bytes).
+  (GDAL cannot signal overflow) and feature count inflation when reading back
+  (MVT stores features per tile).
 
 ### Changed
 
 - `write_pmtiles()` now rejects GDAL feature-cap rebuilds and size-driven
   geometry recoding by default, before changing a Path or stream destination.
   `on_overflow="unsafe"` is the explicit warned opt-out for lossy GDAL output.
+- Point-layer export batches geometry conversion and property preparation to
+  reduce Python overhead while preserving output semantics.
 - Removed GDAL as a hard pip dependency, made `write_pmtiles()` importable
   without GDAL, and switched CI test jobs to provision native GDAL separately.
 
