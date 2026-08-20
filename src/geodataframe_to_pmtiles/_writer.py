@@ -171,6 +171,7 @@ import math
 import tempfile
 import uuid
 import warnings
+from collections.abc import Mapping
 from importlib import import_module
 from io import BytesIO, IOBase
 from pathlib import Path
@@ -189,7 +190,7 @@ from geodataframe_to_pmtiles.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
+    from collections.abc import Collection
 
     import geopandas as gpd
 
@@ -765,6 +766,12 @@ def write(
             raise TypeError(msg)
         layers_mapping: dict[str, gpd.GeoDataFrame] = {layer: layers}
     else:
+        if not isinstance(layers, Mapping):
+            msg = (
+                f"'layers' must be a Mapping (e.g. dict) of layer name → "
+                f"GeoDataFrame, got {type(layers).__name__!r}."
+            )
+            raise TypeError(msg)
         if layer is not _MISSING:
             msg = (
                 "The 'layer' argument must not be provided when 'layers' is a "

@@ -2159,3 +2159,52 @@ def test_write_is_only_public_symbol() -> None:
 
     assert callable(gpm.write)
     assert not hasattr(gpm, "write_pmtiles")
+
+
+# ---------------------------------------------------------------------------
+# Mapping guard: non-Mapping layers must raise TypeError before dict(...)
+# ---------------------------------------------------------------------------
+
+
+def test_layers_list_of_pairs_raises_type_error() -> None:
+    """Passing a list-of-pairs as 'layers' raises TypeError, not silently building a dict."""
+    import io
+
+    from geodataframe_to_pmtiles import write
+
+    gdf = _points_gdf()
+    pairs = [
+        ("lyr", gdf)
+    ]  # list of (name, GeoDataFrame) — looks dict-like but is not a Mapping
+    with pytest.raises(TypeError, match="Mapping"):
+        write(pairs, io.BytesIO())  # type: ignore[arg-type]
+
+
+def test_layers_generator_raises_type_error() -> None:
+    """Passing a generator as 'layers' raises TypeError."""
+    import io
+
+    from geodataframe_to_pmtiles import write
+
+    gdf = _points_gdf()
+
+    def _gen():
+        yield "lyr", gdf
+
+    with pytest.raises(TypeError, match="Mapping"):
+        write(_gen(), io.BytesIO())  # type: ignore[arg-type]
+
+
+def test_layers_mapping_subclass_accepted() -> None:
+    """A genuine Mapping subclass (e.g. OrderedDict) is accepted without error up to dispatch."""
+    import collections
+    import io
+
+    from geodataframe_to_pmtiles import write
+    from geodataframe_to_pmtiles.exceptions import EmptyLayerError, MissingCRSError
+
+    gdf_no_crs = gpd.GeoDataFrame(geometry=gpd.GeoSeries([]))
+    od = collections.OrderedDict([("lyr", gdf_no_crs)])
+    # Should not raise TypeError; will fail later (EmptyLayerError or MissingCRSError) but not on the Mapping check.
+    with pytest.raises((MissingCRSError, EmptyLayerError)):
+        write(od, io.BytesIO())

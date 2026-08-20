@@ -47,7 +47,9 @@ The single public entry point is `write`:
 from geodataframe_to_pmtiles import write
 
 write(
-    layers={"layer_name": gdf},  # dict[str, GeoDataFrame], all must be EPSG:4326
+    layers={
+        "layer_name": gdf
+    },  # dict[str, GeoDataFrame]; any explicit CRS is accepted and reprojected to EPSG:4326
     output=Path("out.pmtiles"),  # Path or binary stream
     min_zoom=0,
     max_zoom=8,
