@@ -1,0 +1,113 @@
+{
+  "header": {
+    "maxzoom": 0,
+    "minzoom": 0,
+    "tile_compression": "gzip",
+    "tile_type": "mvt"
+  },
+  "metadata": {
+    "description": "ERA5 daily anomalies clipped to Europe",
+    "name": "ERA5 t2m max delta",
+    "vector_layers": [
+      {
+        "fields": [
+          "ID",
+          "ceil",
+          "floor"
+        ],
+        "id": "era5_t2m_max_delta"
+      }
+    ]
+  },
+  "semantic": {
+    "band_counts": [
+      {
+        "ceil": -5.0,
+        "feature_count": 1,
+        "floor": -6.0
+      },
+      {
+        "ceil": -4.0,
+        "feature_count": 1,
+        "floor": -5.0
+      },
+      {
+        "ceil": -3.0,
+        "feature_count": 7,
+        "floor": -4.0
+      },
+      {
+        "ceil": -2.0,
+        "feature_count": 21,
+        "floor": -3.0
+      },
+      {
+        "ceil": -1.0,
+        "feature_count": 17,
+        "floor": -2.0
+      },
+      {
+        "ceil": 0.0,
+        "feature_count": 30,
+        "floor": -1.0
+      },
+      {
+        "ceil": 1.0,
+        "feature_count": 49,
+        "floor": 0.0
+      },
+      {
+        "ceil": 2.0,
+        "feature_count": 41,
+        "floor": 1.0
+      },
+      {
+        "ceil": 3.0,
+        "feature_count": 31,
+        "floor": 2.0
+      },
+      {
+        "ceil": 4.0,
+        "feature_count": 41,
+        "floor": 3.0
+      },
+      {
+        "ceil": 5.0,
+        "feature_count": 20,
+        "floor": 4.0
+      },
+      {
+        "ceil": 6.0,
+        "feature_count": 23,
+        "floor": 5.0
+      },
+      {
+        "ceil": 7.0,
+        "feature_count": 11,
+        "floor": 6.0
+      },
+      {
+        "ceil": 8.0,
+        "feature_count": 3,
+        "floor": 7.0
+      },
+      {
+        "ceil": 9.0,
+        "feature_count": 1,
+        "floor": 8.0
+      }
+    ],
+    "feature_count": 297,
+    "features_with_holes": 53,
+    "geometry_types": {
+      "MultiPolygon": 7,
+      "Polygon": 290
+    },
+    "property_keys": [
+      "ID",
+      "ceil",
+      "floor"
+    ],
+    "total_holes": 244
+  }
+}

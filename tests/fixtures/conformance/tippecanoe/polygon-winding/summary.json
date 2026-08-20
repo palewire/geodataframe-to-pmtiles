@@ -1,0 +1,30 @@
+{
+  "header": {
+    "maxzoom": 0,
+    "minzoom": 0,
+    "tile_compression": "gzip",
+    "tile_type": "mvt"
+  },
+  "metadata": {
+    "description": "Tippecanoe polygon hole fixture",
+    "name": "Polygon winding fixture",
+    "vector_layers": [
+      {
+        "fields": [],
+        "id": "polygon_winding"
+      }
+    ]
+  },
+  "semantic": {
+    "feature_count": 1,
+    "features_with_holes": 1,
+    "geometry_types": {
+      "Polygon": 1
+    },
+    "hole_counts": [
+      1
+    ],
+    "property_keys": [],
+    "total_holes": 1
+  }
+}

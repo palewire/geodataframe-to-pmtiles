@@ -79,10 +79,10 @@ dependency-check: ## Check dependency declarations with Deptry
 	$(RUN) deptry .
 
 workflow-check: ## Audit GitHub Actions workflows with Zizmor
-	$(RUN) zizmor .github/workflows
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))zizmor,$(RUN) zizmor) .github/workflows
 
 manifest-check: ## Check source distribution contents
-	$(RUN) check-manifest
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))check-manifest,$(RUN) check-manifest)
 
 test: ## Run tests serially
 	$(RUN) pytest $(TEST_ARGS)
@@ -105,7 +105,7 @@ package-check: ## Build, install, and import PACKAGE in an isolated environment
 	@test -n "$(PACKAGE)" || { echo "Set PACKAGE to the library import name."; exit 2; }
 	@temp_dir=$$(mktemp -d); trap 'rm -rf "$$temp_dir"' EXIT; \
 	$(UV) build --wheel --out-dir "$$temp_dir/dist"; \
-	$(RUN) check-wheel-contents "$$temp_dir"/dist/*.whl; \
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))check-wheel-contents,$(RUN) check-wheel-contents) "$$temp_dir"/dist/*.whl; \
 	$(UV) venv --no-project "$$temp_dir/venv"; \
 	$(UV) pip install --python "$$temp_dir/venv/bin/python" "$$temp_dir"/dist/*.whl; \
 	cd "$$temp_dir" && "$$temp_dir/venv/bin/python" -c 'import importlib; importlib.import_module("$(PACKAGE)")'
@@ -113,18 +113,18 @@ package-check: ## Build, install, and import PACKAGE in an isolated environment
 package-verify: package-check coverage ## Run package import and coverage checks
 
 docs: ## Build HTML documentation
-	$(RUN) sphinx-build -M html docs docs/_build
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))sphinx-build,$(RUN) sphinx-build) -M html docs docs/_build
 
 docs-check: ## Build documentation and fail on warnings
-	$(RUN) sphinx-build -M html docs docs/_build -W --keep-going
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))sphinx-build,$(RUN) sphinx-build) -M html docs docs/_build -W --keep-going
 
 linkcheck: ## Check documentation links and fail on warnings
-	$(RUN) sphinx-build -M linkcheck docs docs/_build -W --keep-going
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))sphinx-build,$(RUN) sphinx-build) -M linkcheck docs docs/_build -W --keep-going
 
 build-docs: docs ## Build HTML documentation
 
 serve-docs: ## Serve documentation with live reload
-	$(RUN) sphinx-autobuild -b html docs docs/_build/html
+	$(if $(strip $(GDAL_PYTHON)),$(dir $(GDAL_PYTHON))sphinx-autobuild,$(RUN) sphinx-autobuild) -b html docs docs/_build/html
 
 hooks: ## Run all pre-commit hooks (may modify files)
 	$(RUN) pre-commit run --all-files

@@ -47,6 +47,14 @@ buf = io.BytesIO()
 write_pmtiles({"points": points}, buf, on_overflow="ignore")
 ```
 
+## Test coverage
+
+The test suite includes semantic conformance checks that write tracked climate
+and Tippecanoe fixtures through GDAL, then decode the resulting PMTiles
+archives with the official `pmtiles` reader and `mapbox-vector-tile`. The tests
+assert header metadata, source-layer names, property schemas, hole
+preservation, and feature order while ignoring raw bytes and protobuf ordering.
+
 ## API
 
 See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
