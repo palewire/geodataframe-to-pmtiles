@@ -217,4 +217,4 @@ unused-ignore-comment = "error"
 # Ignore self-imports (DEP003) for the package itself.
 # Benchmarks use optional utilities (shapely, pmtiles) that are test/dev deps.
 per_rule_ignores = {"DEP003" = ["geodataframe_to_pmtiles"]}
-exclude = ["benchmarks"]
+extend_exclude = ["benchmarks"]
