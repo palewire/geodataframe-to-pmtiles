@@ -304,6 +304,7 @@ def test_boolean_properties_decode_as_native_mvt_booleans(
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("flag"))
     assert fld.GetSubType() == ogr.OFSTBoolean
+    ds = None
 
     _, _, layers = read_pmtiles_archive(out)
     decoded = [
@@ -326,6 +327,7 @@ def test_numeric_zero_one_properties_remain_integers(tmp_path: Path) -> None:
     lyr = ds.GetLayerByIndex(0)
     fld = lyr.GetLayerDefn().GetFieldDefn(lyr.GetLayerDefn().GetFieldIndex("binary"))
     assert fld.GetSubType() == ogr.OFSTNone
+    ds = None
 
     _, _, layers = read_pmtiles_archive(out)
     decoded = [
