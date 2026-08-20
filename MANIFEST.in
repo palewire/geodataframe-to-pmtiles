@@ -1,25 +1,32 @@
-include .codespell-ignore-words.txt
-include .editorconfig
-include .gitattributes
-include .gitignore
-include .pre-commit-config.yaml
-include .python-version
-include AGENTS.md
+# Source distributions contain the installed package and user-facing metadata,
+# not repository-only tests, benchmarks, automation, or local configuration.
 include CHANGELOG.md
 include LICENSE
 include README.md
-include CODE_OF_CONDUCT.md
-include CONTRIBUTING.md
-include Makefile
-include RELEASING.md
-include SECURITY.md
-include TEMPLATE_SETUP.md
-include uv.lock
-include zizmor.yml
-recursive-include .devcontainer *
-recursive-include .github *
-recursive-include docs *.md *.py Makefile
-recursive-include tests *.py
-recursive-include tests/fixtures *
-recursive-include benchmarks *.md *.py
-include .env.example
+graft src
+
+prune .devcontainer
+prune .github
+prune benchmarks
+prune docs
+prune tests
+
+exclude .codespell-ignore-words.txt
+exclude .editorconfig
+exclude .env.example
+exclude .gitattributes
+exclude .gitignore
+exclude .pre-commit-config.yaml
+exclude .python-version
+exclude AGENTS.md
+exclude CODE_OF_CONDUCT.md
+exclude CONTRIBUTING.md
+exclude Makefile
+exclude RELEASING.md
+exclude SECURITY.md
+exclude TEMPLATE_SETUP.md
+exclude uv.lock
+exclude zizmor.yml
+
+global-exclude __pycache__
+global-exclude *.py[cod]

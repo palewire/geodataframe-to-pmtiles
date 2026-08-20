@@ -14,9 +14,13 @@ changelog
 
 ## Installation
 
+After version 0.1.0 is published to PyPI, install it with:
+
 ```sh
 pip install geodataframe-to-pmtiles
 ```
+
+Until then, install a source checkout with `uv sync`.
 
 > **Note:** The library itself is pure Python, but `gpm.write()` needs a
 > native GDAL runtime with the PMTiles driver available. The package imports
@@ -24,6 +28,10 @@ pip install geodataframe-to-pmtiles
 > In CI we install GDAL from conda-forge. Locally, install GDAL separately via
 > conda-forge, Homebrew, or your operating system package manager before
 > writing PMTiles archives.
+
+> **Deployment status:** This documentation is built in CI but is not yet
+> deployed as a public site. Browse the source in the repository until the
+> deployment prerequisites in `RELEASING.md` are completed.
 
 ## Quick start
 
@@ -188,36 +196,11 @@ python benchmarks/bench_write_pmtiles.py --fast
 A reference profile and before/after comparison are in
 `benchmarks/profile_report.md`.
 
-### Write-path bottleneck
+### Interpreting results
 
-The write path iterates features one at a time via OGR's SWIG layer
-(`Layer.CreateFeature`), which is the dominant and irreducible per-feature
-cost at ~0.17 ms/feature.  The surrounding Python overhead (WKB conversion,
-property normalisation, emptiness filtering) has been minimised with
-vectorised batch operations.
-
-### Global layers and parallel workers
-
-For large layers (> 500 k features), the per-feature GDAL cost dominates.
-Practical guidance:
-
-* **Split by zoom range** — write separate archives for coarse (z0–5) and
-  fine (z6–12) zoom ranges and merge them client-side or at serving time.
-  Coarser zoom ranges produce far fewer tiles and complete much faster.
-
-* **Split by region** — partition a global dataset into regional shards
-  (e.g. one GeoDataFrame per continent), write each shard to its own
-  `BytesIO` buffer, and merge the raw bytes with a tool such as
-  `pmtiles merge`.
-
-* **Parallel workers** — `gpm.write` is stateless and can be called
-  in separate processes (not threads; GDAL/GIL contention affects threads)
-  via `concurrent.futures.ProcessPoolExecutor`.  Each worker writes to its
-  own `BytesIO` buffer.  Tile ranges must not overlap across workers, or
-  features will be double-written.
-
-* **Memory** — peak Python-level memory tracks roughly with the number of
-  input features × (WKB bytes per feature + pre-normalised column lists).
-  For point layers, WKB is 21 bytes/feature.  A 1 M-feature point layer
-  with three float64 columns needs roughly 100–150 MB of Python-side
-  allocations before GDAL's own vsimem and MVT tile buffers.
+The checked-in reference profile records a seeded, z0-8 global-point workload
+on one macOS arm64 environment with GDAL 3.12.2. Its fast run completed 1,000
+features in 0.31–0.41 seconds and 10,000 features in 2.91–3.13 seconds,
+depending on whether output was a `Path` or `BytesIO`. These are modest,
+reproducible reference measurements for that workload—not a general
+throughput, memory, or archive-capacity guarantee.

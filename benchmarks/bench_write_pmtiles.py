@@ -36,18 +36,8 @@ timing.
 process RSS.  It captures the in-Python WKB buffer, pre-normalised
 column lists, and the vsimem-read buffer.
 
-Comparison with climate-monitor ERA5 run (private, for context)
----------------------------------------------------------------
-The private climate-monitor workload runs an ERA5 0.25-degree global
-grid (approx. 1 M points, z0-8, 3 property columns) and was benchmarked
-externally.  Reference numbers (not reproducible here, included for
-scale context only):
-
-  Tippecanoe  48.06 s / 690 MB RSS / 73.5 MB archive
-  Library     77.36 s / 1.09 GB RSS / 66.3 MB archive  (pre-optimisation)
-
-The compact workloads below are representative of the write path but are
-much smaller than the ERA5 dataset.
+The compact, deterministic workloads below are reproducible reference points,
+not a general throughput, memory, or capacity promise.
 """
 
 from __future__ import annotations

@@ -6,8 +6,18 @@ subprocesses, no temporary files.
 
 ## Install
 
+After version 0.1.0 is published to PyPI, install it with:
+
 ```sh
 pip install geodataframe-to-pmtiles
+```
+
+Until then, install a source checkout:
+
+```sh
+git clone https://github.com/palewire/geodataframe-to-pmtiles.git
+cd geodataframe-to-pmtiles
+uv sync
 ```
 
 > **Note:** The library itself is pure Python, but `write()` needs a
@@ -22,13 +32,13 @@ pip install geodataframe-to-pmtiles
 ```python
 import geopandas as gpd
 from pathlib import Path
-from geodataframe_to_pmtiles import write
+import geodataframe_to_pmtiles as gpm
 
 # Any explicit CRS is accepted — reprojection to EPSG:4326 is automatic.
 points = gpd.read_file("points.geojson")
 polygons = gpd.read_file("polys.geojson")
 
-write(
+gpm.write(
     {"points": points, "polygons": polygons},
     Path("output.pmtiles"),
     min_zoom=0,
@@ -75,8 +85,9 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 
 ## API
 
-See the [documentation](https://palewire.github.io/geodataframe-to-pmtiles/) for
-the full API reference.
+The documentation source is in [`docs/`](docs/). It is built in CI but is not
+deployed publicly yet; this README and [`docs/api.md`](docs/api.md) provide the
+current API reference.
 
 ### `write` — two call forms
 
