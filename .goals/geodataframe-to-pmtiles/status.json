@@ -1,0 +1,10 @@
+{
+  "goal_id": "geodataframe-to-pmtiles",
+  "status": "building",
+  "iteration": 1,
+  "builder_model": "Claude:Sonnet-4.6",
+  "inspector_model": "Claude:Haiku-4.5",
+  "initial_sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "created_at": "2026-08-20T05:09:13.203-04:00",
+  "history": []
+}
