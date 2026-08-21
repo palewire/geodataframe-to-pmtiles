@@ -21,7 +21,7 @@ writing archives.
 
 ## Quick start
 
-Pass a mapping to create multiple named layers:
+Write one GeoDataFrame by passing it first and supplying the layer name:
 
 ```python
 from pathlib import Path
@@ -30,23 +30,26 @@ import geopandas as gpd
 import geodataframe_to_pmtiles as gpm
 
 points = gpd.read_file("points.geojson")
+
+gpm.write(
+    points,
+    Path("points.pmtiles"),
+    layer="points",
+)
+```
+
+## Multiple named layers
+
+To write more than one layer, pass a mapping. Its keys become the names stored
+in the archive:
+
+```python
 boundaries = gpd.read_file("boundaries.geojson")
 
 gpm.write(
     {"points": points, "boundaries": boundaries},
     Path("map.pmtiles"),
-    min_zoom=0,
-    max_zoom=8,
-    name="Example map",
-    description="Points and boundaries",
-    attribution="© OpenStreetMap contributors",
 )
-```
-
-Or pass one GeoDataFrame and give its layer a name:
-
-```python
-gpm.write(points, Path("points.pmtiles"), layer="points")
 ```
 
 Every input GeoDataFrame needs an explicit CRS. Inputs in any resolvable CRS
@@ -68,24 +71,27 @@ gpm.write({"points": points}, archive)
 archive.seek(0)
 ```
 
+## `gpm.write` options
+
+The two positional inputs are `layers` and `output`; all other inputs are
+keyword-only. Use `layer` with the single-GeoDataFrame form, not the mapping
+form.
+
+| Option | Description |
+| --- | --- |
+| `layers` | A single `GeoDataFrame`, or a non-empty mapping of string layer names to `GeoDataFrame` objects. Every frame must be non-empty and have an explicit, resolvable CRS. |
+| `output` | A string or `Path` destination, or a binary-writable stream such as `BytesIO`. Path output is written to a temporary file and atomically replaces the destination only on success. |
+| `layer` | Required for a single GeoDataFrame and omitted for a mapping. It must be a non-empty string without null characters. |
+| `min_zoom` | Archive-wide minimum zoom, from 0 through 22; defaults to `0` and cannot exceed `max_zoom`. |
+| `max_zoom` | Archive-wide maximum zoom, from 0 through 22; defaults to `8` and cannot be below `min_zoom`. |
+| `name` | Optional tileset name, stored in archive metadata when non-empty. Defaults to an empty string. |
+| `description` | Optional human-readable description, stored in archive metadata when non-empty. Defaults to an empty string. |
+| `attribution` | Optional string stored as TileJSON `attribution`; the default empty string omits that key. Unicode and HTML are preserved. A non-string raises `TypeError`. |
+| `json_fields` | `None` by default, which JSON-encodes every list- or dictionary-valued column. A collection limits that treatment to named columns; other list or dictionary columns raise `UnsupportedPropertyTypeError`. |
+| `on_overflow` | `"error"` by default, which raises `TileOverflowError` before changing the destination when GDAL reports a tile limit action. `"unsafe"` warns and writes despite possible dropped features or reduced precision. |
+| `simplification` | Optional geometry simplification factor in tile-coordinate units (4,096 per tile). The default, `None`, disables simplification. |
+
 ## Archive behavior
-
-`min_zoom` and `max_zoom` set archive-wide zoom levels from 0 through 22
-(defaulting to 0 and 8). `name` and `description` become archive metadata, and
-a non-empty `attribution` is stored in the archive's TileJSON metadata.
-
-List and dictionary properties are JSON-encoded by default. To limit that
-behavior to known columns, pass their names with `json_fields`; an unlisted
-list or dictionary property then raises `UnsupportedPropertyTypeError`.
-Geometry simplification is off by default. Pass `simplification` only when a
-loss of geometric detail is appropriate.
-
-For a path destination, the completed archive replaces the destination
-atomically. The default `on_overflow="error"` rejects an archive before either
-a path or stream destination changes when GDAL reports a tile feature limit or
-size-driven geometry recoding. `on_overflow="unsafe"` is an explicit lossy
-opt-out: it warns and may write an archive with missing features or reduced
-precision.
 
 PMTiles uses the Web Mercator latitude range (±85.05112877980659°). Features
 entirely outside that range are warned about and skipped; if no features remain,
