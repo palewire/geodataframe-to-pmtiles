@@ -351,7 +351,7 @@ def check() -> CheckReport:
     """
     try:
         gdal, _ogr, _osr = _load_osgeo_modules()
-    except (ImportError, OSError, RuntimeError) as exc:
+    except _DIAGNOSTIC_FAILURES as exc:
         bindings = _result(
             "python_bindings",
             False,
