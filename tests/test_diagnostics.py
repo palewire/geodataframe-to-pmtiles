@@ -175,9 +175,12 @@ def test_package_write_is_loaded_lazily(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(module, "import_module", fake_import_module)
 
-    assert module.write is writer
-    assert module.write is writer
-    assert imported == ["geodataframe_to_pmtiles._writer"]
+    try:
+        assert module.write is writer
+        assert module.write is writer
+        assert imported == ["geodataframe_to_pmtiles._writer"]
+    finally:
+        module.__dict__.pop("write", None)
 
 
 def test_successful_binding_report_omits_module_paths(
