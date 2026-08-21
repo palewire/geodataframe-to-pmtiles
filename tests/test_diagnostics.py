@@ -290,6 +290,30 @@ def test_check_error_output_omits_local_paths(monkeypatch: pytest.MonkeyPatch) -
     assert "/Users/alice" not in rendered
 
 
+def test_assertion_error_in_diagnostic_failures() -> None:
+    """AssertionError is included so MVT decoder failures don't escape check()."""
+    assert AssertionError in diagnostics._DIAGNOSTIC_FAILURES
+
+
+@pytest.mark.integration
+def test_smoke_check_catches_assertion_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An AssertionError from the MVT protobuf decoder is caught as a failure."""
+    pytest.importorskip("geopandas")
+    pytest.importorskip("pmtiles")
+    monkeypatch.setattr(
+        diagnostics,
+        "_mvt_has_property",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected non-bytes value in protobuf decoder")
+        ),
+    )
+
+    result = diagnostics._smoke_check()
+
+    assert not result.ok
+    assert result.observed == {"error": "AssertionError"}
+
+
 def test_cli_human_output_and_exit_code(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

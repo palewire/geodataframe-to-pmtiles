@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 _MIN_GDAL_VERSION = (3, 8, 0)
 _DIAGNOSTIC_FAILURES = (
+    AssertionError,
     AttributeError,
     EOFError,
     ImportError,
