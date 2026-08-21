@@ -6,7 +6,7 @@ subprocesses, no temporary files.
 
 ## Install
 
-Install version 0.1.0 from PyPI:
+Install the latest release from PyPI:
 
 ```sh
 pip install geodataframe-to-pmtiles
