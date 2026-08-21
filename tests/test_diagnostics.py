@@ -88,7 +88,7 @@ def test_check_reports_missing_bindings_without_raising(
         "pmtiles_capabilities",
         "pmtiles_smoke",
     ]
-    assert report.checks[0].observed["error"] == "ImportError: no module named osgeo"
+    assert report.checks[0].observed["error"] == "ImportError"
     assert all(not result.ok for result in report.checks)
     assert json.loads(json.dumps(report.to_dict(), sort_keys=True)) == report.to_dict()
 
@@ -111,7 +111,7 @@ def test_check_reports_partially_importable_bindings(
 
     assert not report.ok
     assert imported == ["osgeo.gdal", "osgeo.ogr", "osgeo.osr"]
-    assert report.checks[0].observed["error"] == "OSError: native library mismatch"
+    assert report.checks[0].observed["error"] == "OSError"
 
 
 def test_check_does_not_import_gdal_until_called(
@@ -224,7 +224,7 @@ def test_check_reports_driver_metadata_error(monkeypatch: pytest.MonkeyPatch) ->
     report = diagnostics.check()
 
     assert not report.ok
-    assert report.checks[3].observed["error"] == "RuntimeError: driver registry failed"
+    assert report.checks[3].observed["error"] == "RuntimeError"
     assert report.checks[4].message.startswith("Not run:")
     assert report.checks[-1].message.startswith("Not run:")
 
@@ -269,6 +269,25 @@ def test_check_reports_smoke_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not report.ok
     assert not report.checks[-1].ok
     assert report.checks[-1].observed["error"] == "RuntimeError: write failed"
+
+
+def test_check_error_output_omits_local_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Native loader errors cannot leak paths through the JSON report."""
+    monkeypatch.setattr(
+        diagnostics,
+        "_load_osgeo_modules",
+        lambda: (_ for _ in ()).throw(
+            OSError(
+                "dlopen(/Users/alice/.venv/lib/python/osgeo/_gdal.so): image not found"
+            )
+        ),
+    )
+
+    report = diagnostics.check()
+    rendered = json.dumps(report.to_dict())
+
+    assert report.checks[0].observed == {"error": "OSError"}
+    assert "/Users/alice" not in rendered
 
 
 def test_cli_human_output_and_exit_code(

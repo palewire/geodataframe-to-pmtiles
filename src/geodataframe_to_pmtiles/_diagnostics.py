@@ -91,7 +91,7 @@ def _failed_check(name: CheckName, action: str, exc: Exception) -> CheckResult:
     return _result(
         name,
         False,
-        {"error": f"{type(exc).__name__}: {exc}"},
+        {"error": type(exc).__name__},
         f"Could not {action}.",
         "Reinstall matching GDAL and Python bindings from conda-forge, then run this command again.",
     )
@@ -329,7 +329,7 @@ def _smoke_check() -> CheckResult:
         return _result(
             "pmtiles_smoke",
             False,
-            {"error": f"{type(exc).__name__}: {exc}"},
+            {"error": type(exc).__name__},
             "The in-memory PMTiles write and independent reopen/decode smoke test failed.",
             "Check GDAL's GEOS and SQLite support, then reinstall a complete GDAL build from conda-forge.",
         )
@@ -354,7 +354,7 @@ def check() -> CheckReport:
         bindings = _result(
             "python_bindings",
             False,
-            {"error": f"{type(exc).__name__}: {exc}"},
+            {"error": type(exc).__name__},
             "GDAL Python bindings could not be imported.",
             "Install matching GDAL and Python bindings with conda-forge. On macOS, "
             "install GDAL with Homebrew and use bindings built for that GDAL. On "
