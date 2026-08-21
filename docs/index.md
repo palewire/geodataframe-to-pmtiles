@@ -111,3 +111,11 @@ default overflow policy unless accepting the resulting loss is intentional.
 - [Issue tracker](https://github.com/palewire/geodataframe-to-pmtiles/issues)
 - [Changelog](https://github.com/palewire/geodataframe-to-pmtiles/blob/main/CHANGELOG.md)
 - [PyPI package](https://pypi.org/project/geodataframe-to-pmtiles/)
+
+## About
+
+[Ben Welsh](https://github.com/benwelsh) created this module in August 2026 as
+a spinoff of the
+[Reuters Climate Monitor](https://www.reuters.com/graphics/CLIMATE-AUTOMATED/MONITOR/akpeykqqapr/).
+[GitHub Copilot](https://github.com/features/copilot), an AI-powered coding
+assistant, helped design, implement, test, and document the project.
