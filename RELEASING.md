@@ -77,8 +77,8 @@ this runtime validation.
 The `release` job in `.github/workflows/continuous-deployment.yaml` publishes
 the build artifact from a pushed tag using PyPI's OIDC trusted-publishing
 action. It uses the protected `pypi` environment and receives only an OIDC
-`id-token: write` permission. The release job reuses the build artifact and
-checks its metadata before publishing.
+`id-token: write` permission plus read-only access to repository contents. The
+release job reuses the build artifact and checks its metadata before publishing.
 
 The external publishing setup is complete:
 
