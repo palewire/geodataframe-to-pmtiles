@@ -6,13 +6,13 @@ subprocesses, no temporary files.
 
 ## Install
 
-After version 0.1.0 is published to PyPI, install it with:
+Install version 0.1.0 from PyPI:
 
 ```sh
 pip install geodataframe-to-pmtiles
 ```
 
-Until then, install a source checkout:
+To install from a source checkout instead:
 
 ```sh
 git clone https://github.com/palewire/geodataframe-to-pmtiles.git
@@ -101,9 +101,8 @@ preservation, and feature order while ignoring raw bytes and protobuf ordering.
 
 ## Documentation
 
-The single-page documentation source is [`docs/index.md`](docs/index.md) and is
-built in CI. Deployment remains disabled pending explicit approval and the first
-deployment. Once published, the public documentation URL will be
+The concise, single-page documentation is built from
+[`docs/index.md`](docs/index.md) and published at
 [`https://palewi.re/docs/geodataframe-to-pmtiles/`](https://palewi.re/docs/geodataframe-to-pmtiles/).
 
 ### `gpm.write` — two call forms

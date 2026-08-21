@@ -11,6 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `gpm.check()` and `python -m geodataframe_to_pmtiles check` provide
   post-install GDAL and PMTiles diagnostics with a stable structured report.
 
+### Changed
+
+- Package metadata and repository documentation now link to the live
+  single-page documentation site.
+
 ## [0.1.0] - 2026-08-20
 
 ### Added
