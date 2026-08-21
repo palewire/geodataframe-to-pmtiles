@@ -83,13 +83,12 @@ archives with the official `pmtiles` reader and `mapbox-vector-tile`. The tests
 assert header metadata, source-layer names, property schemas, hole
 preservation, and feature order while ignoring raw bytes and protobuf ordering.
 
-## API
+## Documentation
 
-The documentation source is in [`docs/`](docs/) and is built in CI. Deployment
-is disabled pending explicit approval and the first deployment; afterward the
-public site will be available at
-`https://palewi.re/docs/geodataframe-to-pmtiles/`. Until then, this README and
-[`docs/api.md`](docs/api.md) provide the current API reference.
+The single-page documentation source is [`docs/index.md`](docs/index.md) and is
+built in CI. Deployment remains disabled pending explicit approval and the first
+deployment. Once published, the public documentation URL will be
+[`https://palewi.re/docs/geodataframe-to-pmtiles/`](https://palewi.re/docs/geodataframe-to-pmtiles/).
 
 ### `gpm.write` — two call forms
 
