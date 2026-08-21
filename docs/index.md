@@ -10,36 +10,13 @@ Install the package from PyPI:
 pip install geodataframe-to-pmtiles
 ```
 
-Writing an archive also requires a native GDAL runtime with the PMTiles driver.
-The package can be imported without GDAL, but `gpm.write()` raises a
-`RuntimeError` when that runtime is unavailable. Install GDAL separately with
-conda-forge, Homebrew, or your operating system's package manager before
-writing archives.
+Writing an archive also requires a native GDAL runtime with the PMTiles driver. Install GDAL separately with conda-forge, Homebrew, or your operating system's package manager before writing archives.
 
-## Diagnostics and troubleshooting
-
-Run the post-install diagnostic when GDAL setup prevents writing:
+You should run the post-install diagnostic to make sure your GDAL install it working:
 
 ```console
 python -m geodataframe_to_pmtiles check
-python -m geodataframe_to_pmtiles check --json
 ```
-
-`gpm.check()` returns the same typed `CheckReport` in Python. Its stable check
-names cover Python bindings, binding/native version compatibility, the supported
-GDAL range (3.8 or later), the PMTiles driver and capabilities, and a real
-in-memory write followed by an independent reopen and decode. `report.ok` is
-true only when every check passes. Ordinary setup failures return failed results
-instead of raising exceptions.
-
-The command is runtime verification only, never an install hook. Conda-forge is
-the most reliable cross-platform option because it installs matching native
-GDAL and Python bindings together. On macOS, install GDAL with Homebrew and use
-bindings built for that installation. On Linux, install matching GDAL runtime
-and Python packages from one system package source. If the PMTiles driver,
-vector creation capability, or smoke check fails, install a complete GDAL build
-with PMTiles, GEOS, and SQLite support. Include the small `--json` output in a
-bug report; it excludes credentials, home paths, and full environment dumps.
 
 ## Quick start
 
