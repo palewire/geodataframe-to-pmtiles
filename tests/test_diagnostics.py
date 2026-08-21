@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import json
 import struct
@@ -130,6 +131,53 @@ def test_check_does_not_import_gdal_until_called(
     importlib.reload(gpm)
 
     assert calls == []
+
+
+def test_package_import_does_not_require_writer_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Diagnostics remain importable even when writer-only deps are missing."""
+    real_import = builtins.__import__
+
+    def guarded_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "geodataframe_to_pmtiles._writer":
+            raise ModuleNotFoundError("No module named 'numpy'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = importlib.reload(gpm)
+
+    assert callable(module.check)
+    assert "write" in module.__all__
+
+
+def test_package_write_is_loaded_lazily(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public write symbol is imported only when first accessed."""
+    module = importlib.reload(gpm)
+    module.__dict__.pop("write", None)
+    writer = object()
+    imported: list[str] = []
+
+    class _FakeWriterModule:
+        write = writer
+
+    def fake_import_module(name: str) -> _FakeWriterModule:
+        imported.append(name)
+        assert name == "geodataframe_to_pmtiles._writer"
+        return _FakeWriterModule
+
+    monkeypatch.setattr(module, "import_module", fake_import_module)
+
+    assert module.write is writer
+    assert module.write is writer
+    assert imported == ["geodataframe_to_pmtiles._writer"]
 
 
 def test_successful_binding_report_omits_module_paths(
