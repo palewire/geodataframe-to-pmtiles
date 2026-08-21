@@ -14,8 +14,8 @@ Writing an archive also requires a native GDAL runtime with the PMTiles driver.
 Install GDAL separately with conda-forge, Homebrew, or your operating system's
 package manager before writing archives.
 
-After installing GDAL, use `gpm.check()` or the command below to confirm that
-the GDAL installation and PMTiles driver work:
+After installing GDAL, use `geodataframe_to_pmtiles.check()` or the command
+below to confirm that the GDAL installation and PMTiles driver work:
 
 ```console
 python -m geodataframe_to_pmtiles check
