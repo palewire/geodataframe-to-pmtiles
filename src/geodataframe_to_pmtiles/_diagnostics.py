@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import gzip
 import re
+import struct
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Literal
+
+from geodataframe_to_pmtiles.exceptions import WritePMTilesError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -22,8 +25,10 @@ _DIAGNOSTIC_FAILURES = (
     KeyError,
     OSError,
     RuntimeError,
+    struct.error,
     TypeError,
     ValueError,
+    WritePMTilesError,
 )
 _CHECK_NAMES = (
     "python_bindings",
@@ -311,7 +316,7 @@ def _smoke_check() -> CheckResult:
         from pmtiles.reader import MemorySource, Reader
         from shapely.geometry import Point
 
-        from geodataframe_to_pmtiles._writer import write
+        from geodataframe_to_pmtiles import write
 
         output = BytesIO()
         frame = gpd.GeoDataFrame(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import struct
 from typing import Final
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 import geodataframe_to_pmtiles as gpm
 from geodataframe_to_pmtiles import __main__ as cli
 from geodataframe_to_pmtiles import _diagnostics as diagnostics
+from geodataframe_to_pmtiles.exceptions import WritePMTilesError
 
 
 class _FakeDriver:
@@ -315,8 +317,10 @@ def test_check_error_output_omits_local_paths(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_assertion_error_in_diagnostic_failures() -> None:
-    """AssertionError is included so MVT decoder failures don't escape check()."""
+    """Decoder and writer errors are returned as diagnostic failures."""
     assert AssertionError in diagnostics._DIAGNOSTIC_FAILURES
+    assert struct.error in diagnostics._DIAGNOSTIC_FAILURES
+    assert WritePMTilesError in diagnostics._DIAGNOSTIC_FAILURES
 
 
 @pytest.mark.integration
@@ -338,16 +342,43 @@ def test_smoke_check_catches_assertion_error(monkeypatch: pytest.MonkeyPatch) ->
     assert result.observed == {"error": "AssertionError"}
 
 
+def test_smoke_check_catches_writer_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public writer failure is returned without exposing its message."""
+    monkeypatch.setattr(
+        gpm,
+        "write",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            WritePMTilesError("private path and token")
+        ),
+    )
+
+    result = diagnostics._smoke_check()
+
+    assert not result.ok
+    assert result.observed == {"error": "WritePMTilesError"}
+    assert "private path and token" not in result.message
+
+
 def test_cli_human_output_and_exit_code(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Human CLI output explains failed checks and returns a nonzero exit code."""
-    report = diagnostics.CheckReport(False, (_successful_smoke(),))
+    failed = diagnostics.CheckResult(
+        "pmtiles_smoke",
+        False,
+        {"error": "RuntimeError"},
+        "The smoke test failed.",
+        "Install a complete GDAL build from conda-forge.",
+    )
+    report = diagnostics.CheckReport(False, (_successful_smoke(), failed))
     monkeypatch.setattr(cli, "check", lambda: report)
 
     assert cli.main(["check"]) == 1
 
-    assert "[ok] pmtiles_smoke" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "[ok] pmtiles_smoke" in output
+    assert "[failed] pmtiles_smoke: The smoke test failed." in output
+    assert "Guidance: Install a complete GDAL build from conda-forge." in output
 
 
 def test_cli_json_output_and_exit_code(
