@@ -99,7 +99,9 @@ requests. Its deployment infrastructure is configured: the `docs-production`
 environment is restricted to `main`; AWS OIDC uses
 `arn:aws:iam::989419493461:role/github-geodataframe-to-pmtiles` in `us-east-1`;
 and the environment secrets target the `palewire-docs` bucket under
-`docs/geodataframe-to-pmtiles`.
+`geodataframe-to-pmtiles`. The public route includes `/docs/`
+(`https://palewi.re/docs/geodataframe-to-pmtiles/`), but that route segment is
+not part of the S3 origin prefix (`DOCS_AWS_BASE_PATH=geodataframe-to-pmtiles`).
 
 Deployment activation and the first deployment remain pending.
 `DOCS_DEPLOY_ENABLED` is currently `false`, so the workflow cannot publish the
