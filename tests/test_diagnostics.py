@@ -174,6 +174,30 @@ def test_check_reports_version_mismatch(monkeypatch: pytest.MonkeyPatch) -> None
     assert not smoke_called
 
 
+def test_check_version_values_omit_private_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Version metadata is canonicalized before it reaches a support report."""
+    monkeypatch.setattr(
+        diagnostics,
+        "_load_osgeo_modules",
+        lambda: _fake_modules(
+            _FakeGdal(
+                binding="3.12.2 /Users/alice/.venv token=secret",
+                native="3.12.2 HOME=/Users/alice",
+            )
+        ),
+    )
+    monkeypatch.setattr(diagnostics, "_smoke_check", _successful_smoke)
+
+    rendered = json.dumps(diagnostics.check().to_dict())
+
+    assert "3.12.2" in rendered
+    assert "/Users/alice" not in rendered
+    assert "token=secret" not in rendered
+    assert "HOME=" not in rendered
+
+
 def test_check_reports_unsupported_gdal_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

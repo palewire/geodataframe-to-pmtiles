@@ -115,9 +115,15 @@ def _version_parts(value: str) -> tuple[int, int, int] | None:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
 
 
+def _reported_version(value: object) -> str:
+    """Return a canonical version suitable for a support report."""
+    parts = _version_parts(str(value))
+    return ".".join(map(str, parts)) if parts is not None else "unknown"
+
+
 def _version_check(gdal: Any) -> CheckResult:
-    binding = str(getattr(gdal, "__version__", "unknown"))
-    native = str(gdal.VersionInfo("RELEASE_NAME") or "unknown")
+    binding = _reported_version(getattr(gdal, "__version__", "unknown"))
+    native = _reported_version(gdal.VersionInfo("RELEASE_NAME") or "unknown")
     binding_parts = _version_parts(binding)
     native_parts = _version_parts(native)
     compatible = (
@@ -143,7 +149,7 @@ def _version_check(gdal: Any) -> CheckResult:
 
 
 def _supported_version_check(gdal: Any) -> CheckResult:
-    native = str(gdal.VersionInfo("RELEASE_NAME") or "unknown")
+    native = _reported_version(gdal.VersionInfo("RELEASE_NAME") or "unknown")
     version = _version_parts(native)
     supported = version is not None and version >= _MIN_GDAL_VERSION
     return _result(
