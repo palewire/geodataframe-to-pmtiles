@@ -1,9 +1,6 @@
 # geodataframe-to-pmtiles
 
-Create [PMTiles](https://protomaps.com/docs/pmtiles) vector archives from
-[GeoPandas](https://geopandas.org/) GeoDataFrames with GDAL's native PMTiles
-driver. `geodataframe-to-pmtiles` writes directly through GDAL, without
-subprocesses or intermediate data files.
+Write PMTiles archives from GeoPandas GeoDataFrames with a Python API.
 
 ## Installation
 
