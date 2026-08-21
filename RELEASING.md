@@ -52,9 +52,9 @@ environments, or generated archives.
 package imports without GDAL, while `gpm.write()` requires a native GDAL
 runtime with the PMTiles vector driver.
 
-The CI workflow runs its wheel-import and coverage gates after the external
-`PACKAGE_IMPORT_NAME=geodataframe_to_pmtiles` repository variable is set.
-Until then, run the commands above locally before seeking release approval.
+The `PACKAGE_IMPORT_NAME=geodataframe_to_pmtiles` repository variable is
+configured, so CI runs its wheel-import and coverage gates. Run the commands
+above locally before seeking release approval as well.
 
 ## Native GDAL validation
 
@@ -76,17 +76,21 @@ this runtime validation.
 
 The `release` job in `.github/workflows/continuous-deployment.yaml` publishes
 the build artifact from a pushed tag using PyPI's OIDC trusted-publishing
-action. Before the first release, a maintainer must configure a PyPI Trusted
-Publisher for:
+action. It uses the protected `pypi` environment and receives only an OIDC
+`id-token: write` permission. The release job reuses the build artifact and
+checks its metadata before publishing.
 
-- owner: `palewire`
-- repository: `geodataframe-to-pmtiles`
-- workflow: `.github/workflows/continuous-deployment.yaml`
-- environment: *(leave blank; the workflow does not declare one)*
+The external publishing setup is complete:
 
-That PyPI configuration is external to this repository and remains pending
-until a maintainer completes it. Never replace it with a long-lived PyPI token
-in repository secrets.
+- `PACKAGE_IMPORT_NAME=geodataframe_to_pmtiles` enables the wheel-import and
+  coverage CI gates.
+- The `pypi` environment allows only semantic-version tags.
+- PyPI Trusted Publishing is configured for owner `palewire`, repository
+  `geodataframe-to-pmtiles`, workflow
+  `.github/workflows/continuous-deployment.yaml`, and environment `pypi`.
+
+Never replace the trusted publisher with a long-lived PyPI token in repository
+secrets.
 
 After explicit approval and only then, a maintainer should create the approved
 tag, monitor the workflow, verify the published version and metadata on PyPI,
