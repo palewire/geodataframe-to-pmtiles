@@ -4,7 +4,7 @@ Write PMTiles archives from GeoPandas GeoDataFrames with a Python API.
 
 ## Installation
 
-Install version 0.1.0 from PyPI:
+Install from PyPI:
 
 ```console
 pip install geodataframe-to-pmtiles
