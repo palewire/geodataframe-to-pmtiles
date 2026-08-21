@@ -4,15 +4,18 @@ Write PMTiles archives from GeoPandas GeoDataFrames with a Python API.
 
 ## Installation
 
-Install the package from PyPI:
+Install from PyPI:
 
 ```console
 pip install geodataframe-to-pmtiles
 ```
 
-Writing an archive also requires a native GDAL runtime with the PMTiles driver. Install GDAL separately with conda-forge, Homebrew, or your operating system's package manager before writing archives.
+Writing an archive also requires a native GDAL runtime with the PMTiles driver.
+Install GDAL separately with conda-forge, Homebrew, or your operating system's
+package manager before writing archives.
 
-You should run the post-install diagnostic to make sure your GDAL install it working:
+After installing GDAL, use `geodataframe_to_pmtiles.check()` or the command
+below to confirm that the GDAL installation and PMTiles driver work:
 
 ```console
 python -m geodataframe_to_pmtiles check

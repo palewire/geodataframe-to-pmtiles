@@ -16,21 +16,19 @@ This checklist tracks template setup for `geodataframe-to-pmtiles`.
 - [x] Configure the protected `docs-production` environment (restricted to
       `main`), AWS OIDC role `github-geodataframe-to-pmtiles`, `us-east-1`
       region, and S3 target `palewire-docs/geodataframe-to-pmtiles`.
-- [x] Keep the public documentation path
+- [x] Keep Cloudflare's public documentation path
       `https://palewi.re/docs/geodataframe-to-pmtiles/` distinct from the S3
-      origin prefix `geodataframe-to-pmtiles`: `/docs/` belongs to the public
-      URL routing and is not part of `DOCS_AWS_BASE_PATH`.
-- [ ] **Deployment activation and first deploy pending:** Keep
-      `DOCS_DEPLOY_ENABLED=false` until explicit human approval, then enable it
-      and verify the first deployment at the canonical documentation URL.
+      origin prefix `geodataframe-to-pmtiles`: `/docs/` belongs to Cloudflare's
+      public routing and is not part of `DOCS_AWS_BASE_PATH`.
+- [x] Enable documentation deployment and verify the first deployment at
+      `https://palewi.re/docs/geodataframe-to-pmtiles/`.
 
 ## Continuous Integration
 
 - [x] Configure the workflow to test against conda-forge GDAL 3.12.2.
 - [x] Set the `PACKAGE_IMPORT_NAME=geodataframe_to_pmtiles` repository variable
       to enable wheel-import and coverage CI checks.
-- [ ] **External setup pending:** Configure required checks and review rules for
-      the default branch.
+- [x] Configure required checks and review rules for the default branch.
 
 ## Release
 

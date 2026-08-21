@@ -37,10 +37,9 @@ documentation workflow. Build it locally with:
 make docs-check
 ```
 
-Deployment infrastructure is configured, but deployment remains disabled while
-`DOCS_DEPLOY_ENABLED=false`. After its approved first deployment, the public
-site will be available at
-`https://palewi.re/docs/geodataframe-to-pmtiles/`. See
+The concise, single-page site is published at
+[`https://palewi.re/docs/geodataframe-to-pmtiles/`](https://palewi.re/docs/geodataframe-to-pmtiles/).
+See
 [`TEMPLATE_SETUP.md`](TEMPLATE_SETUP.md) and [`RELEASING.md`](RELEASING.md).
 
 ## Releasing

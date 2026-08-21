@@ -9,9 +9,9 @@ are configured.
 
 Preparing code, documentation, and artifacts does **not** authorize a release.
 Only a maintainer with explicit human approval may create a tag, create a
-GitHub Release, publish to PyPI, or enable or deploy the documentation site.
-Automation and agents may run the validation commands and update this
-repository, but must stop before any of those actions.
+GitHub Release, or publish to PyPI. Automation and agents may run the
+validation commands and update this repository, but must stop before those
+actions.
 
 ## Versioning and tags
 
@@ -99,16 +99,11 @@ and create any GitHub Release required by project policy.
 ## Documentation deployment
 
 `.github/workflows/docs.yaml` builds Sphinx documentation on pushes and pull
-requests. Its deployment infrastructure is configured: the `docs-production`
-environment is restricted to `main`; AWS OIDC uses
+requests, and deploys successful `main` builds to the live site:
+[`https://palewi.re/docs/geodataframe-to-pmtiles/`](https://palewi.re/docs/geodataframe-to-pmtiles/).
+The `docs-production` environment is restricted to `main`; AWS OIDC uses
 `arn:aws:iam::989419493461:role/github-geodataframe-to-pmtiles` in `us-east-1`;
 and the environment secrets target the `palewire-docs` bucket under
-`geodataframe-to-pmtiles`. The public route includes `/docs/`
+`geodataframe-to-pmtiles`. Cloudflare's public route includes `/docs/`
 (`https://palewi.re/docs/geodataframe-to-pmtiles/`), but that route segment is
 not part of the S3 origin prefix (`DOCS_AWS_BASE_PATH=geodataframe-to-pmtiles`).
-
-Deployment activation and the first deployment remain pending.
-`DOCS_DEPLOY_ENABLED` is currently `false`, so the workflow cannot publish the
-site. After explicit human approval, a maintainer may enable it and verify the
-first deployment to `https://palewi.re/docs/geodataframe-to-pmtiles/`. Do not
-represent that URL as live until the deployment succeeds.
