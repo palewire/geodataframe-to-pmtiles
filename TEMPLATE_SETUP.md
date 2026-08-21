@@ -27,8 +27,8 @@ This checklist tracks template setup for `geodataframe-to-pmtiles`.
 ## Continuous Integration
 
 - [x] Configure the workflow to test against conda-forge GDAL 3.12.2.
-- [ ] **External setup pending:** Set the `PACKAGE_IMPORT_NAME` repository variable to
-      `geodataframe_to_pmtiles` to enable wheel-import and coverage CI checks.
+- [x] Set the `PACKAGE_IMPORT_NAME=geodataframe_to_pmtiles` repository variable
+      to enable wheel-import and coverage CI checks.
 - [ ] **External setup pending:** Configure required checks and review rules for
       the default branch.
 
@@ -37,6 +37,9 @@ This checklist tracks template setup for `geodataframe-to-pmtiles`.
 - [x] Document setuptools-scm versioning, release validation, trusted-publishing
       prerequisites, and human approval boundaries in `RELEASING.md`.
 - [x] Confirm `CHANGELOG.md` and issue/PR templates match the project workflow.
-- [ ] **External setup pending:** Configure PyPI Trusted Publishing for
-      `palewire/geodataframe-to-pmtiles` and
-      `.github/workflows/continuous-deployment.yaml`.
+- [x] Configure the protected `pypi` environment for semantic-version tags and
+      attach the tag-only PyPI release job to it.
+- [x] Configure PyPI Trusted Publishing for
+      `palewire/geodataframe-to-pmtiles`,
+      `.github/workflows/continuous-deployment.yaml`, and the `pypi`
+      environment.
