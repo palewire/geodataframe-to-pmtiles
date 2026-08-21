@@ -16,10 +16,10 @@ This checklist tracks template setup for `geodataframe-to-pmtiles`.
 - [x] Configure the protected `docs-production` environment (restricted to
       `main`), AWS OIDC role `github-geodataframe-to-pmtiles`, `us-east-1`
       region, and S3 target `palewire-docs/geodataframe-to-pmtiles`.
-- [x] Keep the public documentation path
+- [x] Keep Cloudflare's public documentation path
       `https://palewi.re/docs/geodataframe-to-pmtiles/` distinct from the S3
-      origin prefix `geodataframe-to-pmtiles`: `/docs/` belongs to the public
-      URL routing and is not part of `DOCS_AWS_BASE_PATH`.
+      origin prefix `geodataframe-to-pmtiles`: `/docs/` belongs to Cloudflare's
+      public routing and is not part of `DOCS_AWS_BASE_PATH`.
 - [x] Enable documentation deployment and verify the first deployment at
       `https://palewi.re/docs/geodataframe-to-pmtiles/`.
 

@@ -104,6 +104,6 @@ requests, and deploys successful `main` builds to the live site:
 The `docs-production` environment is restricted to `main`; AWS OIDC uses
 `arn:aws:iam::989419493461:role/github-geodataframe-to-pmtiles` in `us-east-1`;
 and the environment secrets target the `palewire-docs` bucket under
-`geodataframe-to-pmtiles`. The public route includes `/docs/`
+`geodataframe-to-pmtiles`. Cloudflare's public route includes `/docs/`
 (`https://palewi.re/docs/geodataframe-to-pmtiles/`), but that route segment is
 not part of the S3 origin prefix (`DOCS_AWS_BASE_PATH=geodataframe-to-pmtiles`).
