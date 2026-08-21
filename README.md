@@ -27,6 +27,22 @@ uv sync
 > conda-forge, Homebrew, or your operating system package manager before
 > writing PMTiles archives.
 
+### Diagnose GDAL
+
+After installing GDAL, check that its Python bindings, native library, PMTiles
+driver, and a real in-memory write all work:
+
+```sh
+python -m geodataframe_to_pmtiles check
+python -m geodataframe_to_pmtiles check --json
+```
+
+`--json` prints a small, stable report that is safe to include in a bug report.
+The check runs only when requested; it is not an install hook. Conda-forge is
+the most reliable setup on every platform. On macOS, install GDAL with Homebrew
+and use Python bindings built for that installation. On Linux, install matching
+GDAL runtime and Python packages from the same system package source.
+
 ## Usage
 
 ```python

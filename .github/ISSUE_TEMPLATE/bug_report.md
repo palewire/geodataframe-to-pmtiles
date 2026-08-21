@@ -26,6 +26,8 @@ Describe the incorrect behavior and its user impact.
 - Package version or commit:
 - Python version:
 - Operating system:
+- If this is a GDAL or PMTiles setup problem, paste
+  `python -m geodataframe_to_pmtiles check --json` output:
 
 ## Acceptance Criteria
 

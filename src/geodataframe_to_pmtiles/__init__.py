@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from geodataframe_to_pmtiles._diagnostics import CheckReport, CheckResult, check
 from geodataframe_to_pmtiles._writer import write
 from geodataframe_to_pmtiles.exceptions import (
     CRSTransformError,
@@ -16,6 +17,8 @@ from geodataframe_to_pmtiles.exceptions import (
 
 __all__ = [
     "CRSTransformError",
+    "CheckReport",
+    "CheckResult",
     "EmptyLayerError",
     "MissingCRSError",
     "TileLimitViolation",
@@ -23,5 +26,6 @@ __all__ = [
     "UnsupportedCRSError",
     "UnsupportedPropertyTypeError",
     "WritePMTilesError",
+    "check",
     "write",
 ]
