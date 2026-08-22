@@ -10,6 +10,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `gpm.check()` and `python -m geodataframe_to_pmtiles check` provide
   post-install GDAL and PMTiles diagnostics with a stable structured report.
+- `layer_zooms` parameter on `gpm.write()` accepts a
+  `Mapping[str, LayerZoomSpec]` for per-layer minimum and maximum zoom
+  overrides.  Omitted keys inherit the archive-wide `min_zoom` / `max_zoom`
+  defaults.  Overrides are translated into a deterministic GDAL `CONF`
+  creation option.  Unknown layer names, non-integer zoom values,
+  out-of-range zooms, and effective min > max all raise the new
+  `InvalidLayerZoomError` before any GDAL object is created.
+- `InvalidLayerZoomError` is a new public exception raised when a
+  `layer_zooms` entry is invalid.
+- `LayerZoomSpec` is the typed per-layer override dict exported from the
+  package for use in type annotations.
 
 ### Changed
 

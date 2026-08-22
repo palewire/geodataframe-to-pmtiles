@@ -86,12 +86,50 @@ form.
 | `layer` | Required for a single GeoDataFrame and omitted for a mapping. It must be a non-empty string without null characters. |
 | `min_zoom` | Archive-wide minimum zoom, from 0 through 22; defaults to `0` and cannot exceed `max_zoom`. |
 | `max_zoom` | Archive-wide maximum zoom, from 0 through 22; defaults to `8` and cannot be below `min_zoom`. |
+| `layer_zooms` | Optional per-layer zoom overrides; see [Per-layer zoom ranges](#per-layer-zoom-ranges) below. |
 | `name` | Optional tileset name, stored in archive metadata when non-empty. Defaults to an empty string. |
 | `description` | Optional human-readable description, stored in archive metadata when non-empty. Defaults to an empty string. |
 | `attribution` | Optional string stored as TileJSON `attribution`; the default empty string omits that key. Unicode and HTML are preserved. A non-string raises `TypeError`. |
 | `json_fields` | `None` by default, which JSON-encodes every list- or dictionary-valued column. A collection limits that treatment to named columns; other list or dictionary columns raise `UnsupportedPropertyTypeError`. |
 | `on_overflow` | `"error"` by default, which raises `TileOverflowError` before changing the destination when GDAL reports a tile limit action. `"unsafe"` warns and writes despite possible dropped features or reduced precision. |
 | `simplification` | Optional geometry simplification factor in tile-coordinate units (4,096 per tile). The default, `None`, disables simplification. |
+
+## Per-layer zoom ranges
+
+Use `layer_zooms` to assign different minimum and maximum zooms to individual
+layers within one archive. Omitted keys inherit the archive-wide `min_zoom` or
+`max_zoom`. This is useful when you want contour layers visible at all zooms
+while restricting a dense data layer to high-zoom tiles only:
+
+```python
+gpm.write(
+    {"contours": contours_gdf, "data": points_gdf},
+    Path("map.pmtiles"),
+    min_zoom=0,
+    max_zoom=8,
+    layer_zooms={
+        "contours": {"minzoom": 0, "maxzoom": 8},
+        "data": {"minzoom": 7},  # maxzoom inherits archive default (8)
+    },
+)
+```
+
+The `LayerZoomSpec` type is a `TypedDict` with optional `"minzoom"` and
+`"maxzoom"` integer keys:
+
+```python
+from geodataframe_to_pmtiles import LayerZoomSpec
+
+spec: LayerZoomSpec = {"minzoom": 7}  # maxzoom omitted → archive default
+```
+
+`layer_zooms` validation runs before any GDAL object is created. The
+`InvalidLayerZoomError` exception is raised when:
+
+- a key refers to a layer name not present in the `layers` mapping,
+- a zoom value is not an integer,
+- an effective zoom (after inheriting archive defaults) is outside 0–22, or
+- the effective minimum zoom exceeds the effective maximum zoom.
 
 ## Archive behavior
 
@@ -105,8 +143,9 @@ to GDAL for clipping.
 The principal exceptions are `MissingCRSError` for a GeoDataFrame without a
 CRS, `UnsupportedCRSError` or `CRSTransformError` for reprojection failures,
 `UnsupportedPropertyTypeError` for values that cannot be written as MVT
-properties, `EmptyLayerError` for empty layers, and `TileOverflowError` for a
-detected safe-overflow rejection.
+properties, `EmptyLayerError` for empty layers, `TileOverflowError` for a
+detected safe-overflow rejection, and `InvalidLayerZoomError` for invalid
+`layer_zooms` entries.
 
 MVT stores a feature in every tile it intersects, so feature counts read back
 from an archive can be higher than the source count. That duplication is not

@@ -9,6 +9,7 @@ from geodataframe_to_pmtiles._diagnostics import CheckReport, CheckResult, check
 from geodataframe_to_pmtiles.exceptions import (
     CRSTransformError,
     EmptyLayerError,
+    InvalidLayerZoomError,
     MissingCRSError,
     TileLimitViolation,
     TileOverflowError,
@@ -18,6 +19,7 @@ from geodataframe_to_pmtiles.exceptions import (
 )
 
 if TYPE_CHECKING:
+    from geodataframe_to_pmtiles._writer import LayerZoomSpec
     from geodataframe_to_pmtiles._writer import write as write
 
 __all__ = [
@@ -25,6 +27,8 @@ __all__ = [
     "CheckReport",
     "CheckResult",
     "EmptyLayerError",
+    "InvalidLayerZoomError",
+    "LayerZoomSpec",
     "MissingCRSError",
     "TileLimitViolation",
     "TileOverflowError",
@@ -37,8 +41,12 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    if name != "write":
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    write = import_module("geodataframe_to_pmtiles._writer").write
-    globals()["write"] = write
-    return write
+    if name == "write":
+        write = import_module("geodataframe_to_pmtiles._writer").write
+        globals()["write"] = write
+        return write
+    if name == "LayerZoomSpec":
+        _cls = import_module("geodataframe_to_pmtiles._writer").LayerZoomSpec
+        globals()["LayerZoomSpec"] = _cls
+        return _cls
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
