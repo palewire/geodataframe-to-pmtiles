@@ -55,6 +55,15 @@ class TileLimitViolation:
     tile: tuple[int, int, int] | None
 
 
+class InvalidLayerZoomError(WritePMTilesError):
+    """Raised when a per-layer zoom override is invalid.
+
+    Common causes include an unknown layer name, a non-integer zoom value, a
+    zoom outside the 0-22 range, or an effective minimum zoom that exceeds the
+    effective maximum zoom.
+    """
+
+
 class TileOverflowError(WritePMTilesError):
     """Raised when GDAL reports a tile limit that can lose data or precision.
 

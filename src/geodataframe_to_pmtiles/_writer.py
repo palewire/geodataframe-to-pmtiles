@@ -124,16 +124,28 @@ No subprocesses, no temporary files, and no hard-coded magic offsets are used.
 When ``attribution`` is an empty string (the default), the injection step is
 skipped and the archive is written as GDAL produced it.
 
-.. rubric:: CONF per-layer zoom (future extension point)
+.. rubric:: CONF per-layer zoom
 
-The GDAL CONF creation option also supports per-layer ``minzoom``,
-``maxzoom``, and ``target_name`` overrides via a JSON object.  For example::
+The GDAL PMTiles driver supports per-layer ``minzoom`` and ``maxzoom``
+overrides via the ``CONF`` creation option.  The public ``layer_zooms``
+parameter translates those overrides into a deterministic GDAL
+``CONF`` value before GDAL objects are created::
 
-    CONF = {"layers": {"my_layer": {"minzoom": 5, "maxzoom": 8}}}
+    gpm.write(
+        {"contours": contours_gdf, "data": data_gdf},
+        "map.pmtiles",
+        min_zoom=0,
+        max_zoom=8,
+        layer_zooms={
+            "contours": {"minzoom": 0, "maxzoom": 8},
+            "data": {"minzoom": 7},
+        },
+    )
 
-The current API exposes only archive-wide ``min_zoom`` / ``max_zoom``.  Per-
-layer overrides can be added to the CONF dict if finer control is needed,
-but this is not yet part of the public interface.
+This produces a deterministic ``CONF={"contours":{"maxzoom":8,"minzoom":0},"data":{"maxzoom":8,"minzoom":7}}``
+passed to the PMTiles driver; layers are ordered alphabetically for
+deterministic output.  See :class:`~geodataframe_to_pmtiles.LayerZoomSpec`
+and :func:`~geodataframe_to_pmtiles.write` for details.
 
 .. rubric:: Alternative in-memory path (VectorTranslate)
 
@@ -175,13 +187,14 @@ from collections.abc import Mapping
 from importlib import import_module
 from io import BytesIO, IOBase
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Literal, overload
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, TypedDict, overload
 
 import numpy as np
 
 from geodataframe_to_pmtiles.exceptions import (
     CRSTransformError,
     EmptyLayerError,
+    InvalidLayerZoomError,
     MissingCRSError,
     TileLimitViolation,
     TileOverflowError,
@@ -233,6 +246,109 @@ class _MissingType:
 
 
 _MISSING = _MissingType()
+
+# ---------------------------------------------------------------------------
+# Per-layer zoom API
+# ---------------------------------------------------------------------------
+
+
+class LayerZoomSpec(TypedDict, total=False):
+    """Per-layer zoom override for a single named layer.
+
+    Both keys are optional.  Omitted keys inherit the archive-wide
+    ``min_zoom`` or ``max_zoom`` default.
+
+    Keys
+    ----
+    minzoom:
+        Layer-specific minimum zoom (0-22).  Defaults to the archive-wide
+        ``min_zoom`` when omitted.
+    maxzoom:
+        Layer-specific maximum zoom (0-22).  Defaults to the archive-wide
+        ``max_zoom`` when omitted.
+    """
+
+    minzoom: int
+    maxzoom: int
+
+
+def _validate_layer_zooms(
+    layer_zooms: Mapping[str, LayerZoomSpec],
+    layer_names: frozenset[str],
+    archive_min: int,
+    archive_max: int,
+) -> dict[str, tuple[int, int]]:
+    """Validate *layer_zooms* and return effective ``{name: (min, max)}`` pairs.
+
+    Raises :class:`~geodataframe_to_pmtiles.InvalidLayerZoomError` for:
+    - unknown layer names (not present in *layer_names*),
+    - non-integer zoom values,
+    - zoom values outside 0-22,
+    - effective minimum zoom exceeding effective maximum zoom.
+    """
+    effective: dict[str, tuple[int, int]] = {}
+    for name, spec in layer_zooms.items():
+        if name not in layer_names:
+            msg = (
+                f"layer_zooms refers to unknown layer {name!r}. "
+                f"Known layers: {sorted(layer_names)}."
+            )
+            raise InvalidLayerZoomError(msg)
+
+        raw_min = spec.get("minzoom")
+        raw_max = spec.get("maxzoom")
+
+        # Validate types before range checks.
+        for label, val in (("minzoom", raw_min), ("maxzoom", raw_max)):
+            if val is None:
+                continue
+            if not isinstance(val, int) or isinstance(val, bool):
+                msg = (
+                    f"layer_zooms[{name!r}][{label!r}] must be an int, "
+                    f"got {type(val).__name__!r}."
+                )
+                raise InvalidLayerZoomError(msg)
+
+        eff_min: int = archive_min if raw_min is None else raw_min
+        eff_max: int = archive_max if raw_max is None else raw_max
+
+        if not (0 <= eff_min <= 22):
+            msg = (
+                f"layer_zooms[{name!r}]['minzoom'] effective value {eff_min} "
+                "is out of range; must be 0-22."
+            )
+            raise InvalidLayerZoomError(msg)
+        if not (0 <= eff_max <= 22):
+            msg = (
+                f"layer_zooms[{name!r}]['maxzoom'] effective value {eff_max} "
+                "is out of range; must be 0-22."
+            )
+            raise InvalidLayerZoomError(msg)
+        if eff_min > eff_max:
+            msg = (
+                f"layer_zooms[{name!r}]: effective minzoom ({eff_min}) "
+                f"exceeds effective maxzoom ({eff_max})."
+            )
+            raise InvalidLayerZoomError(msg)
+
+        effective[name] = (eff_min, eff_max)
+    return effective
+
+
+def _build_conf(layer_zoom_pairs: dict[str, tuple[int, int]]) -> str:
+    """Serialise *layer_zoom_pairs* into a deterministic GDAL PMTiles CONF string.
+
+    The GDAL PMTiles driver expects CONF as a flat mapping of layer name to
+    ``{"minzoom": ..., "maxzoom": ...}`` — no outer ``"layers"`` key::
+
+        {"alpha": {"maxzoom": 8, "minzoom": 0}, "data": {"maxzoom": 8, "minzoom": 7}}
+    """
+    conf = {
+        name: {"minzoom": eff_min, "maxzoom": eff_max}
+        for name, (eff_min, eff_max) in sorted(layer_zoom_pairs.items())
+    }
+    return json.dumps(conf, sort_keys=True, separators=(",", ":"))
+
 
 # ---------------------------------------------------------------------------
 # Web Mercator boundary constants
@@ -593,6 +709,7 @@ def write(
     *,
     min_zoom: int = ...,
     max_zoom: int = ...,
+    layer_zooms: Mapping[str, LayerZoomSpec] | None = ...,
     name: str = ...,
     description: str = ...,
     attribution: str = ...,
@@ -610,6 +727,7 @@ def write(
     layer: str,
     min_zoom: int = ...,
     max_zoom: int = ...,
+    layer_zooms: Mapping[str, LayerZoomSpec] | None = ...,
     name: str = ...,
     description: str = ...,
     attribution: str = ...,
@@ -626,6 +744,7 @@ def write(
     layer: str | _MissingType | None = _MISSING,
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
+    layer_zooms: Mapping[str, LayerZoomSpec] | None = None,
     name: str = "",
     description: str = "",
     attribution: str = "",
@@ -669,6 +788,27 @@ def write(
         Archive-wide minimum zoom level (0-22, default 0).
     max_zoom:
         Archive-wide maximum zoom level (0-22, default 8).
+    layer_zooms:
+        Optional per-layer zoom overrides.  A mapping of layer name to a
+        :class:`~geodataframe_to_pmtiles.LayerZoomSpec` dict with optional
+        ``"minzoom"`` and/or ``"maxzoom"`` keys.  Omitted keys inherit the
+        archive-wide ``min_zoom`` / ``max_zoom`` defaults.  For example::
+
+            gpm.write(
+                {"contours": contours_gdf, "data": data_gdf},
+                "map.pmtiles",
+                min_zoom=0,
+                max_zoom=8,
+                layer_zooms={
+                    "contours": {"minzoom": 0, "maxzoom": 8},
+                    "data": {"minzoom": 7},
+                },
+            )
+
+        Raises :class:`~geodataframe_to_pmtiles.InvalidLayerZoomError` when
+        any layer name is unknown, a zoom value is non-integer or out of
+        range (0-22), or an effective minimum zoom exceeds the effective
+        maximum zoom.  Validation runs before any GDAL object is created.
     name:
         Optional tileset name stored in the archive metadata.
     description:
@@ -723,6 +863,9 @@ def write(
         or a list/dict column is not covered by *json_fields*.
     TileOverflowError
         If ``on_overflow='error'``.  See module docstring for GDAL limitations.
+    InvalidLayerZoomError
+        If *layer_zooms* contains an unknown layer name, a non-integer zoom,
+        an out-of-range zoom (0-22), or an effective min > max.
     TypeError
         If *attribution* is not a string.
     ValueError
@@ -795,6 +938,7 @@ def write(
         output,
         min_zoom=min_zoom,
         max_zoom=max_zoom,
+        layer_zooms=layer_zooms,
         name=name,
         description=description,
         attribution=attribution,
@@ -810,6 +954,7 @@ def _write_impl(
     *,
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
+    layer_zooms: Mapping[str, LayerZoomSpec] | None = None,
     name: str = "",
     description: str = "",
     attribution: str = "",
@@ -868,6 +1013,16 @@ def _write_impl(
     if min_zoom > max_zoom:
         msg = f"min_zoom ({min_zoom}) must be <= max_zoom ({max_zoom})."
         raise ValueError(msg)
+
+    # Validate per-layer zoom overrides before any GDAL object is created.
+    effective_layer_zooms: dict[str, tuple[int, int]] = {}
+    if layer_zooms:
+        effective_layer_zooms = _validate_layer_zooms(
+            layer_zooms,
+            frozenset(layers),
+            min_zoom,
+            max_zoom,
+        )
 
     if on_overflow not in ("error", "unsafe"):
         msg = f"on_overflow must be 'error' or 'unsafe', got {on_overflow!r}."
@@ -980,6 +1135,8 @@ def _write_impl(
         ds_options.append(f"NAME={name}")
     if description:
         ds_options.append(f"DESCRIPTION={description}")
+    if effective_layer_zooms:
+        ds_options.append(f"CONF={_build_conf(effective_layer_zooms)}")
 
     try:
         with _GDALDiagnosticCapture(gdal) as diagnostics:
