@@ -56,6 +56,8 @@ nitpick_ignore = [
     ("py:class", "_MissingType"),
 ]
 
+myst_heading_anchors = 3
+
 linkcheck_timeout = 10
 linkcheck_retries = 2
 
