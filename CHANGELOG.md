@@ -8,6 +8,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `max_features` and `max_size` keyword arguments on `gpm.write()` expose
+  GDAL's per-tile ``MAX_FEATURES`` and ``MAX_SIZE`` creation options as
+  independently configurable, statically typed parameters.  Passing ``None``
+  disables the corresponding limit entirely, instructing GDAL to retain every
+  feature and write full-precision geometry without any tile-size cap.  This
+  is the lossless mode required when a single z0 tile must hold more than
+  the default 300,000-feature cap (e.g. 359,000-polygon climate-monitor cell
+  maps).  Existing callers that omit these arguments retain the previous
+  defaults: 300,000 features and 10,000,000 bytes per tile.
 - `gpm.check()` and `python -m geodataframe_to_pmtiles check` provide
   post-install GDAL and PMTiles diagnostics with a stable structured report.
 - `layer_zooms` parameter on `gpm.write()` accepts a

@@ -223,6 +223,13 @@ DEFAULT_MAX_ZOOM: int = 8
 _MAX_FEATURES: int = 300_000
 _MAX_SIZE: int = 10_000_000
 
+# atoi-safe sentinel passed to GDAL's MAX_FEATURES / MAX_SIZE when the caller
+# sets the corresponding parameter to ``None`` (disabled).  This is INT_MAX
+# (2^31 - 1): safe for GDAL's internal ``atoi()`` conversion and large enough
+# that no realistic tile will ever reach it.  GDAL stores the limits as
+# ``unsigned int``, and ``static_cast<unsigned>(2147483647)`` = 2147483647.
+_GDAL_NO_LIMIT: int = 2_147_483_647
+
 PropertyKind = Literal["string", "int", "float", "bool"]
 
 
@@ -608,8 +615,16 @@ OverflowPolicy = Literal["error", "unsafe"]
 class _GDALDiagnosticCapture:
     """Collect MVT debug messages emitted while GDAL finalizes an archive."""
 
-    def __init__(self, gdal: Any) -> None:
+    def __init__(
+        self,
+        gdal: Any,
+        *,
+        max_features: int | None,
+        max_size: int | None,
+    ) -> None:
         self._gdal = gdal
+        self._max_features = max_features
+        self._max_size = max_size
         self._events: list[tuple[int, str]] = []
         self._get_thread_option = getattr(gdal, "GetThreadLocalConfigOption", None)
         self._set_thread_option = getattr(gdal, "SetThreadLocalConfigOption", None)
@@ -643,28 +658,34 @@ class _GDALDiagnosticCapture:
         )
 
     def violations(self) -> tuple[TileLimitViolation, ...]:
-        """Translate GDAL's stable MVT diagnostics into public context."""
+        """Translate GDAL's stable MVT diagnostics into public context.
+
+        Only emits a violation when the corresponding limit is finite (not
+        ``None``/disabled).  When a limit is disabled the GDAL sentinel value
+        is so large that no realistic tile ever triggers the diagnostic, so this
+        branch is unreachable in practice; the guard is a safety net.
+        """
         violations: list[TileLimitViolation] = []
         for _, message in self._events:
             coordinates = _tile_coordinates(message)
             if "feature count limit of" in message:
                 limit = _integer_after(message, "feature count limit of ")
-                if limit is not None:
+                if limit is not None and self._max_features is not None:
                     violations.append(
                         TileLimitViolation(
                             limit="MAX_FEATURES",
-                            requested=_MAX_FEATURES,
+                            requested=self._max_features,
                             observed=limit,
                             tile=coordinates,
                         )
                     )
             elif "Recoding tile " in message and "From " in message:
                 observed = _integer_after(message, "From ")
-                if observed is not None:
+                if observed is not None and self._max_size is not None:
                     violations.append(
                         TileLimitViolation(
                             limit="MAX_SIZE",
-                            requested=_MAX_SIZE,
+                            requested=self._max_size,
                             observed=observed,
                             tile=coordinates,
                         )
@@ -714,6 +735,8 @@ def write(
     description: str = ...,
     attribution: str = ...,
     json_fields: Collection[str] | None = ...,
+    max_features: int | None = ...,
+    max_size: int | None = ...,
     on_overflow: OverflowPolicy = ...,
     simplification: float | None = ...,
 ) -> None: ...
@@ -732,6 +755,8 @@ def write(
     description: str = ...,
     attribution: str = ...,
     json_fields: Collection[str] | None = ...,
+    max_features: int | None = ...,
+    max_size: int | None = ...,
     on_overflow: OverflowPolicy = ...,
     simplification: float | None = ...,
 ) -> None: ...
@@ -749,6 +774,8 @@ def write(
     description: str = "",
     attribution: str = "",
     json_fields: Collection[str] | None = None,
+    max_features: int | None = _MAX_FEATURES,
+    max_size: int | None = _MAX_SIZE,
     on_overflow: OverflowPolicy = "error",
     simplification: float | None = None,
 ) -> None:
@@ -832,12 +859,48 @@ def write(
 
         In both cases the encoding is explicit: ``json.dumps`` with
         ``ensure_ascii=False``.  The resulting MVT field type is ``String``.
+    max_features:
+        Per-tile maximum feature count passed to GDAL's ``MAX_FEATURES``
+        creation option.  Defaults to ``300,000``, which prevents silent
+        feature drops on typical dense datasets.  Pass ``None`` to disable
+        the limit entirely: GDAL will write every feature to every
+        intersecting tile without truncation.  This is the lossless mode
+        required when every polygon must be preserved (e.g. a 359,000-polygon
+        z0 layer).
+
+        **Safety:** disabling the feature limit does not enable any lossy
+        fallback — it instructs GDAL to retain all features unconditionally.
+        ``on_overflow="unsafe"`` is irrelevant when ``max_features=None``
+        because GDAL will never emit a feature-count diagnostic.
+
+        Example — write a 400,000-feature z0 archive without any feature cap::
+
+            gpm.write({"cells": gdf}, "big.pmtiles", max_features=None, max_size=None)
+
+        Raises :exc:`TypeError` if the value is a bool or non-integer, or
+        :exc:`ValueError` if it is zero or negative.
+    max_size:
+        Per-tile maximum compressed byte size passed to GDAL's ``MAX_SIZE``
+        creation option.  Defaults to ``10,000,000`` bytes (10 MB).  Pass
+        ``None`` to disable the size limit: GDAL will never recode a tile at
+        lower geometry resolution to satisfy a byte cap.  Combine with
+        ``max_features=None`` for fully lossless output.
+
+        **Safety:** disabling the size limit does not enable any lossy
+        fallback — it instructs GDAL to write tiles at full precision
+        regardless of compressed size.
+
+        Raises :exc:`TypeError` if the value is a bool or non-integer, or
+        :exc:`ValueError` if it is zero or negative.
     on_overflow:
         Response to GDAL's per-tile ``MAX_FEATURES`` / ``MAX_SIZE`` actions.
         ``"error"`` (the default) raises
         :class:`~geodataframe_to_pmtiles.TileOverflowError` before the
         destination is changed. ``"unsafe"`` writes the archive after a
         warning, even if GDAL dropped features or reduced geometry precision.
+        This parameter is not relevant when both ``max_features=None`` and
+        ``max_size=None``, because disabled limits never trigger GDAL's
+        overflow diagnostics.
     simplification:
         Optional geometry simplification factor in tile-coordinate units
         (4096 per tile).  ``None`` (default) disables simplification, which
@@ -879,9 +942,10 @@ def write(
     Boolean field subtype.  numpy scalars and ``datetime``/``pd.Timestamp``
     objects are normalised to Python native types before reaching OGR.
 
-    Per-tile caps are fixed spike-validated POC values:
-    ``MAX_FEATURES = 300,000`` and ``MAX_SIZE = 10 MB``.  They are not
-    unlimited; see the module docstring for details and the tested result.
+    Per-tile caps default to ``MAX_FEATURES = 300,000`` and
+    ``MAX_SIZE = 10 MB``.  Both can be independently set to ``None`` to write
+    every feature and full-precision geometry without any tile-size guard.  See
+    the ``max_features`` and ``max_size`` parameter docs for details.
 
     Attribution is injected after GDAL writes the archive by re-encoding only
     the metadata section; all MVT tile payloads are preserved byte-for-byte.
@@ -943,6 +1007,8 @@ def write(
         description=description,
         attribution=attribution,
         json_fields=json_fields,
+        max_features=max_features,
+        max_size=max_size,
         on_overflow=on_overflow,
         simplification=simplification,
     )
@@ -959,6 +1025,8 @@ def _write_impl(
     description: str = "",
     attribution: str = "",
     json_fields: Collection[str] | None = None,
+    max_features: int | None = _MAX_FEATURES,
+    max_size: int | None = _MAX_SIZE,
     on_overflow: OverflowPolicy = "error",
     simplification: float | None = None,
 ) -> None:
@@ -1027,6 +1095,32 @@ def _write_impl(
     if on_overflow not in ("error", "unsafe"):
         msg = f"on_overflow must be 'error' or 'unsafe', got {on_overflow!r}."
         raise ValueError(msg)
+
+    for _limit_name, _limit_value in (
+        ("max_features", max_features),
+        ("max_size", max_size),
+    ):
+        if _limit_value is not None:
+            if isinstance(_limit_value, bool):
+                msg = (
+                    f"'{_limit_name}' must be a positive int or None, got bool.  "
+                    "Pass None to disable the limit."
+                )
+                raise TypeError(msg)
+            if not isinstance(_limit_value, int):
+                msg = (
+                    f"'{_limit_name}' must be a positive int or None, "
+                    f"got {type(_limit_value).__name__!r}.  "
+                    "Pass None to disable the limit."
+                )
+                raise TypeError(msg)
+            if _limit_value <= 0:
+                msg = (
+                    f"'{_limit_name}' must be a positive integer, "
+                    f"got {_limit_value}.  "
+                    "Pass None to disable the limit."
+                )
+                raise ValueError(msg)
 
     if not isinstance(attribution, str):
         msg = (
@@ -1128,8 +1222,8 @@ def _write_impl(
     ds_options: list[str] = [
         f"MINZOOM={min_zoom}",
         f"MAXZOOM={max_zoom}",
-        f"MAX_SIZE={_MAX_SIZE}",
-        f"MAX_FEATURES={_MAX_FEATURES}",
+        f"MAX_SIZE={_GDAL_NO_LIMIT if max_size is None else max_size}",
+        f"MAX_FEATURES={_GDAL_NO_LIMIT if max_features is None else max_features}",
     ]
     if name:
         ds_options.append(f"NAME={name}")
@@ -1139,7 +1233,9 @@ def _write_impl(
         ds_options.append(f"CONF={_build_conf(effective_layer_zooms)}")
 
     try:
-        with _GDALDiagnosticCapture(gdal) as diagnostics:
+        with _GDALDiagnosticCapture(
+            gdal, max_features=max_features, max_size=max_size
+        ) as diagnostics:
             ds = drv.CreateDataSource(vsimem_path, options=ds_options)
             if ds is None:
                 msg = f"GDAL could not create a PMTiles datasource at {vsimem_path!r}."
