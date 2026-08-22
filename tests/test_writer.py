@@ -562,12 +562,9 @@ def test_dict_column_not_in_json_fields_raises() -> None:
 
 @pytest.mark.integration
 def test_feature_overflow_raises_before_path_is_overwritten(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """A feature cap diagnostic rejects the archive and preserves the destination."""
-    from geodataframe_to_pmtiles import _writer as writer_module
-
-    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
     clustered = gpd.GeoDataFrame(
         {"id": [1, 2, 3]},
         geometry=[Point(0.0, 0.0), Point(0.0, 0.0), Point(0.0, 0.0)],
@@ -577,26 +574,21 @@ def test_feature_overflow_raises_before_path_is_overwritten(
     out.write_bytes(b"keep this archive")
 
     with pytest.raises(TileOverflowError) as caught:
-        write({"clustered": clustered}, out, min_zoom=0, max_zoom=0)
+        write({"clustered": clustered}, out, min_zoom=0, max_zoom=0, max_features=2)
 
     violations = caught.value.violations
     assert len(violations) == 1
     violation = violations[0]
     assert violation.limit == "MAX_FEATURES"
-    assert violation.requested == writer_module._MAX_FEATURES
-    assert violation.observed == writer_module._MAX_FEATURES
+    assert violation.requested == 2
+    assert violation.observed == 2
     assert violation.tile == (0, 0, 0)
     assert out.read_bytes() == b"keep this archive"
 
 
 @pytest.mark.integration
-def test_size_overflow_raises_before_stream_is_changed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_size_overflow_raises_before_stream_is_changed() -> None:
     """A size-driven geometry recode rejects the archive and preserves a stream."""
-    from geodataframe_to_pmtiles import _writer as writer_module
-
-    monkeypatch.setattr(writer_module, "_MAX_SIZE", 100)
     coordinates = [
         (float(index % 360) - 180.0, float((index * 17) % 170) - 85.0)
         for index in range(4_000)
@@ -610,30 +602,23 @@ def test_size_overflow_raises_before_stream_is_changed(
     stream.seek(0)
 
     with pytest.raises(TileOverflowError) as caught:
-        write({"dense": gdf}, stream, min_zoom=0, max_zoom=0)
+        write({"dense": gdf}, stream, min_zoom=0, max_zoom=0, max_size=100)
 
     violations = caught.value.violations
     assert violations
-    assert {violation.requested for violation in violations} == {
-        writer_module._MAX_SIZE
-    }
+    assert {violation.requested for violation in violations} == {100}
     assert all(violation.observed >= violation.requested for violation in violations)
     violation = violations[0]
     assert violation.limit == "MAX_SIZE"
-    assert violation.requested == writer_module._MAX_SIZE
+    assert violation.requested == 100
     assert violation.observed > violation.requested
     assert violation.tile == (0, 0, 0)
     assert stream.getvalue() == b"keep this archive"
 
 
 @pytest.mark.integration
-def test_unsafe_overflow_opt_out_warns_and_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_unsafe_overflow_opt_out_warns_and_writes() -> None:
     """The explicit unsafe mode is the only mode that permits an overflow."""
-    from geodataframe_to_pmtiles import _writer as writer_module
-
-    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
     buffer = io.BytesIO()
     with pytest.warns(UserWarning, match="unsafe"):
         write(
@@ -641,6 +626,7 @@ def test_unsafe_overflow_opt_out_warns_and_writes(
             buffer,
             min_zoom=0,
             max_zoom=0,
+            max_features=2,
             on_overflow="unsafe",
         )
     assert buffer.getvalue()
@@ -730,8 +716,6 @@ def test_default_feature_overflow_rejects_300001_z0_features(
     tmp_path: Path,
 ) -> None:
     """The default 300,000 feature cap rejects the exact 300,001-feature stress case."""
-    from geodataframe_to_pmtiles import _writer as writer_module
-
     n = 300_001
     gdf = gpd.GeoDataFrame(
         {"id": range(n)},
@@ -748,8 +732,8 @@ def test_default_feature_overflow_rejects_300001_z0_features(
 
     violation = caught.value.violations[0]
     assert violation.limit == "MAX_FEATURES"
-    assert violation.requested == writer_module._MAX_FEATURES
-    assert violation.observed == writer_module._MAX_FEATURES
+    assert violation.requested == 300_000
+    assert violation.observed == 300_000
     assert violation.tile == (0, 0, 0)
     assert not out.exists()
 
@@ -2283,16 +2267,12 @@ def test_out_of_bounds_warning_points_at_write_call(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_unsafe_overflow_warning_points_at_write_call(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """on_overflow='unsafe' UserWarning filename is this test file (the gpm.write call site)."""
     import warnings
 
-    from geodataframe_to_pmtiles import _writer as writer_module
     from geodataframe_to_pmtiles import write
-
-    monkeypatch.setattr(writer_module, "_MAX_FEATURES", 2)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -2301,6 +2281,7 @@ def test_unsafe_overflow_warning_points_at_write_call(
             tmp_path / "provenance_overflow.pmtiles",
             min_zoom=0,
             max_zoom=0,
+            max_features=2,
             on_overflow="unsafe",
         )
 
