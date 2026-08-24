@@ -255,6 +255,7 @@ _BATCH_HEADER = (
     f"{'peak_mb':>8}  {'archive_kb':>11}  {'tile_count':>10}"
 )
 _SEP = "-" * len(_HEADER)
+_BATCH_SEP = "-" * len(_BATCH_HEADER)
 
 
 def main() -> None:
@@ -296,7 +297,7 @@ def main() -> None:
                 f"Arrow batch-size comparison  (scale={_BATCH_COMPARE_SCALE:,}, Path output)"
             )
             print(_BATCH_HEADER)
-            print(_SEP)
+            print(_BATCH_SEP)
             gdf = make_point_gdf(_BATCH_COMPARE_SCALE)
             for bs in _BATCH_SIZES:
                 wall, peak, kb, ntiles = _run_path_with_batch(gdf, tmp, bs)

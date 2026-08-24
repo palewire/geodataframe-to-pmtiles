@@ -2032,9 +2032,13 @@ def test_arrow_path_calls_write_py_arrow(
 
     _original_write_py_arrow = ogr.Layer.WritePyArrow
 
-    def _spy_write_py_arrow(self: object, batch: object, options: list = []) -> int:  # noqa: B006
+    def _spy_write_py_arrow(
+        self: object,
+        batch: object,
+        options: list[object] | None = None,
+    ) -> int:
         write_py_arrow_calls.append(batch)
-        return _original_write_py_arrow(self, batch, options)
+        return _original_write_py_arrow(self, batch, options or [])
 
     _original_create_feature = ogr.Layer.CreateFeature
 
