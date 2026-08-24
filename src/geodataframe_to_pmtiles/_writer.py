@@ -147,23 +147,37 @@ passed to the PMTiles driver; layers are ordered alphabetically for
 deterministic output.  See :class:`~geodataframe_to_pmtiles.LayerZoomSpec`
 and :func:`~geodataframe_to_pmtiles.write` for details.
 
-.. rubric:: Alternative in-memory path (VectorTranslate)
+.. rubric:: Arrow batch ingestion
 
-An alternative implementation was investigated using GDAL's
-``VectorTranslate``::
+Features are written using GDAL 3.12.2's ``Layer.WritePyArrow`` in bounded
+batches (see :data:`_ARROW_BATCH_SIZE`) rather than a per-feature
+``OGR.CreateFeature`` loop.  Each batch is a :class:`pyarrow.RecordBatch`
+containing at most ``_ARROW_BATCH_SIZE`` rows.  The geometry column is named
+``wkb_geometry`` and carries WKB-encoded :class:`bytes` produced by
+:func:`shapely.to_wkb`; GDAL parses WKB internally when consuming the batch.
 
-    gdal.VectorTranslate(
-        "/vsimem/out.pmtiles",
-        mem_ds,
-        format="PMTiles",
-        srcSRS="EPSG:4326",
-        dstSRS="EPSG:3857",
-    )
+Arrow type mapping:
 
-This path reprojects to EPSG:3857 (the MVT native CRS) before handing off to
-the driver.  The current implementation uses ``CreateDataSource`` directly and
-passes EPSG:4326 SRS objects, letting the driver handle reprojection
-internally.  Both paths produce valid archives.
++---------------+---------------------------+
+| field kind    | Arrow type                |
++===============+===========================+
+| ``"int"``     | ``pa.int64()``            |
++---------------+---------------------------+
+| ``"float"``   | ``pa.float64()``          |
++---------------+---------------------------+
+| ``"bool"``    | ``pa.bool_()``            |
++---------------+---------------------------+
+| ``"string"``  | ``pa.utf8()``             |
++---------------+---------------------------+
+| geometry      | ``pa.binary()``           |
+|               | (named ``wkb_geometry``)  |
++---------------+---------------------------+
+
+Null values are encoded as Arrow nulls (masked entries), not sentinel values.
+IEEE 754 NaN in float columns is also promoted to null.  ``"string"``-kind
+columns are fully normalised to Python ``str`` or ``None`` before being
+placed into the Arrow array; the per-cell path handles ``datetime``,
+``list``/``dict`` (JSON-encoded), and isoformat-capable objects.
 
 .. rubric:: Feature order
 
@@ -229,6 +243,12 @@ _MAX_SIZE: int = 10_000_000
 # that no realistic tile will ever reach it.  GDAL stores the limits as
 # ``unsigned int``, and ``static_cast<unsigned>(2147483647)`` = 2147483647.
 _GDAL_NO_LIMIT: int = 2_147_483_647
+
+# Number of features per Arrow batch passed to OGR's WritePyArrow.  Batches
+# are bounded so that the in-memory PyArrow RecordBatch never exceeds a few
+# MiB for typical geospatial workloads.  65 536 is the Arrow standard "chunk"
+# recommended by the Arrow columnar format spec.
+_ARROW_BATCH_SIZE: int = 65_536
 
 PropertyKind = Literal["string", "int", "float", "bool"]
 
@@ -1395,25 +1415,45 @@ def _write_layer(
 ) -> None:
     """Create an OGR layer inside *ds* and populate it from *gdf*.
 
+    Uses GDAL 3.12.2's ``Layer.WritePyArrow`` in bounded batches of
+    :data:`_ARROW_BATCH_SIZE` features instead of a per-feature OGR
+    feature-creation loop.  This eliminates the Python-level call overhead
+    for each feature while preserving all property normalisation, null
+    handling, geometry encoding, and boundary-filtering semantics of the
+    original implementation.
+
     Performance notes
     -----------------
     Geometries accepted by the boundary pre-check are batch-converted to WKB
-    via :func:`shapely.to_wkb` before the feature loop. This avoids a per-row
-    Python-level text roundtrip (``geom.wkt`` string serialisation followed by
-    ``CreateGeometryFromWkt`` parsing).
+    via :func:`shapely.to_wkb` before any Arrow work.  Property columns are
+    extracted from the filtered valid-row slice of the GeoDataFrame
+    (:meth:`~pandas.DataFrame.iloc`) and pre-normalised to Python-native lists
+    once before batching.  Each Arrow batch contains at most
+    :data:`_ARROW_BATCH_SIZE` rows, keeping per-batch memory bounded.
 
-    Property columns are pre-normalised to Python-native lists before the
-    feature loop.  For ``int``, ``float``, and ``bool`` kinds,
-    ``Series.tolist()`` converts numpy scalars to Python scalars in one
-    batch operation, and ``Series.isna().tolist()`` produces the null mask
-    without per-row :func:`~pandas.isna` overhead.  The ``bool`` kind is
-    further converted to 0 / 1 :class:`int` values, matching the MVT
-    encoding rule documented in the module docstring.  For ``string``-kind
-    columns a fast path handles the common all-strings case; only columns
-    that contain non-string values (``datetime``, ``list``, ``dict``) use
-    per-row conversion via :func:`str` or ``isoformat``/``json.dumps`` as
-    appropriate for each value type.
+    Arrow type mapping
+    ------------------
+    +--------------+---------------------------+
+    | field kind   | Arrow type                |
+    +==============+===========================+
+    | ``"int"``    | ``pa.int64()``            |
+    +--------------+---------------------------+
+    | ``"float"``  | ``pa.float64()``          |
+    +--------------+---------------------------+
+    | ``"bool"``   | ``pa.bool_()``            |
+    +--------------+---------------------------+
+    | ``"string"`` | ``pa.utf8()``             |
+    +--------------+---------------------------+
+    | geometry     | ``pa.binary()`` named     |
+    |              | ``wkb_geometry``          |
+    +--------------+---------------------------+
+
+    Null handling: null flags from ``Series.isna()`` produce masked Arrow
+    arrays so that null properties are encoded as proper Arrow nulls rather
+    than sentinel values.  For ``"float"`` columns, IEEE 754 NaN values are
+    also treated as null (matching the existing SetField behaviour).
     """
+    import pyarrow as pa
     import shapely
 
     # Determine OGR geometry type from the GeoDataFrame.
@@ -1430,7 +1470,7 @@ def _write_layer(
         msg = f"GDAL could not create layer '{layer_name}'."
         raise RuntimeError(msg)
 
-    # Discover non-geometry columns and their OGR types.
+    # Discover non-geometry columns and define OGR fields.
     property_cols = [c for c in gdf.columns if c != gdf.geometry.name]
     ogr_field_type_map = _ogr_field_types(ogr)
     for col in property_cols:
@@ -1439,88 +1479,123 @@ def _write_layer(
             field_defn.SetSubType(ogr.OFSTBoolean)
         lyr.CreateField(field_defn)
 
-    layer_defn = lyr.GetLayerDefn()
-
     # ------------------------------------------------------------------
-    # Batch-convert the rows accepted by the boundary pre-check to WKB.
+    # Batch-convert valid-row geometries to WKB.
     # ------------------------------------------------------------------
+    valid_idx = np.asarray(valid_row_indices, dtype=np.intp)
     geom_arr = gdf.geometry.values  # geopandas GeometryArray (shapely-backed)
-    valid_idx = np.asarray(valid_row_indices, dtype=int)
-    # to_wkb on a filtered numpy array → ndarray of bytes objects
-    wkb_arr: Any = shapely.to_wkb(geom_arr[valid_idx])
+    wkb_arr: Any = shapely.to_wkb(geom_arr[valid_idx])  # ndarray of bytes
 
     # ------------------------------------------------------------------
-    # Pre-normalise property columns.
-    # For numeric/bool kinds, Series.tolist() converts numpy scalars to
-    # Python scalars in one call; isna().tolist() builds the null mask.
-    # For string-kind columns we pre-build the raw list and fall back to
-    # per-cell normalisation only for non-str values (datetime, JSON…).
+    # Extract valid rows for all property columns and pre-normalise.
+    #
+    # We slice with .iloc[valid_idx] to produce a single filtered view,
+    # then convert each column to a Python list once.  For float columns
+    # NaN is replaced with None so that Arrow represents it as a proper
+    # null rather than a floating-point NaN.  Bool columns are pre-cast
+    # to Python bool (or None for nulls) to satisfy pa.bool_() typing.
+    # String columns are fully normalised to str-or-None here so that
+    # the batch loop only slices pre-built lists.
     # ------------------------------------------------------------------
-    col_nulls: dict[str, list[bool]] = {}
-    col_vals: dict[str, list[Any]] = {}
+    valid_gdf: Any = gdf.iloc[valid_idx]
+
+    # Arrow type map
+    _arrow_types: dict[PropertyKind, Any] = {
+        "int": pa.int64(),
+        "float": pa.float64(),
+        "bool": pa.bool_(),
+        "string": pa.utf8(),
+    }
+
+    # Pre-build one list-of-values per column for all valid rows.
+    col_arrow_arrs: dict[str, Any] = {}
     for col in property_cols:
-        series = gdf[col]
-        null_flags: list[bool] = series.isna().tolist()
-        col_nulls[col] = null_flags
+        series = valid_gdf[col]
         kind = field_kinds[col]
+        null_mask: Any = series.isna().to_numpy(dtype=bool)  # True → null
+
         if kind == "bool":
-            # Pre-convert to 0/1 int; nulls get a placeholder (never used).
             raw = series.tolist()
-            col_vals[col] = [
-                0 if null_flags[i] else int(bool(raw[i])) for i in range(len(raw))
+            # Convert to Python bool-or-None list; PyArrow array with nulls.
+            bool_vals: list[bool | None] = [
+                None if null_mask[i] else bool(raw[i]) for i in range(len(raw))
             ]
-        elif kind in ("int", "float"):
-            col_vals[col] = series.tolist()  # numpy scalars → Python scalars
+            col_arrow_arrs[col] = pa.array(bool_vals, type=pa.bool_())
+
+        elif kind == "int":
+            raw_int = series.tolist()
+            # Replace null placeholders (pd.NA etc.) with 0; mask controls nulls.
+            int_vals: list[int] = [
+                0 if null_mask[i] else int(raw_int[i])  # type: ignore[arg-type]
+                for i in range(len(raw_int))
+            ]
+            col_arrow_arrs[col] = pa.array(int_vals, type=pa.int64(), mask=null_mask)
+
+        elif kind == "float":
+            raw_float = series.tolist()
+            # Treat IEEE 754 NaN as null in addition to explicit NA flags.
+            float_vals: list[float] = []
+            float_null: list[bool] = []
+            for i, v in enumerate(raw_float):
+                if null_mask[i] or (isinstance(v, float) and math.isnan(v)):
+                    float_vals.append(0.0)
+                    float_null.append(True)
+                else:
+                    float_vals.append(float(v))  # type: ignore[arg-type]
+                    float_null.append(False)
+            col_arrow_arrs[col] = pa.array(
+                float_vals,
+                type=pa.float64(),
+                mask=np.asarray(float_null, dtype=bool),
+            )
+
         else:  # "string" kind: str, datetime, list/dict, or None/NA
-            col_vals[col] = series.tolist()
-
-    # ------------------------------------------------------------------
-    # Feature loop — uses pre-computed WKB and pre-normalised columns.
-    # ------------------------------------------------------------------
-    for local_i, row_i_raw in enumerate(valid_idx):
-        row_i: int = int(row_i_raw)
-        ogr_geom = ogr.CreateGeometryFromWkb(bytes(wkb_arr[local_i]))
-        if ogr_geom is None:
-            continue
-
-        feat = ogr.Feature(layer_defn)
-        feat.SetGeometry(ogr_geom)
-
-        for col in property_cols:
-            if col_nulls[col][row_i]:
-                feat.SetFieldNull(col)
-                continue
-
-            val = col_vals[col][row_i]
-            kind = field_kinds[col]
-            if kind in ("bool", "int", "float"):
-                # Already Python-native scalar; set directly.
-                feat.SetField(col, val)
-            else:
-                # "string" kind: fast path for the common all-str case;
-                # fall back to per-cell normalisation for other types.
-                if isinstance(val, str):
-                    feat.SetField(col, val)
+            raw_str = series.tolist()
+            str_vals: list[str | None] = []
+            for i, val in enumerate(raw_str):
+                if null_mask[i]:
+                    str_vals.append(None)
+                elif isinstance(val, str):
+                    str_vals.append(val)
                 elif isinstance(val, (list, dict)):
-                    feat.SetField(col, json.dumps(val, ensure_ascii=False))
+                    str_vals.append(json.dumps(val, ensure_ascii=False))
                 elif isinstance(val, (_dt.date, _dt.datetime)):
-                    feat.SetField(col, val.isoformat())
-                elif isinstance(val, (int, float, np.integer, np.floating)):
-                    # Mixed column (e.g. scalars alongside list/dict values):
-                    # OFTString field; pass the scalar and let OGR convert.
-                    feat.SetField(
-                        col,
-                        int(val) if isinstance(val, (int, np.integer)) else float(val),
-                    )
+                    str_vals.append(val.isoformat())
                 else:
                     iso = getattr(type(val), "isoformat", None)
                     if callable(iso):
-                        feat.SetField(col, iso(val))
+                        str_vals.append(iso(val))
+                    elif isinstance(val, (int, float, np.integer, np.floating)):
+                        str_vals.append(str(val))
                     else:
-                        feat.SetFieldNull(col)
+                        str_vals.append(None)
+            col_arrow_arrs[col] = pa.array(str_vals, type=pa.utf8())
 
-        lyr.CreateFeature(feat)
-        feat = None  # Release
+    # Geometry as WKB binary array.
+    col_arrow_arrs["wkb_geometry"] = pa.array(list(wkb_arr), type=pa.binary())
+
+    # ------------------------------------------------------------------
+    # Build Arrow schema (must match the layer field definitions).
+    # ------------------------------------------------------------------
+    schema_fields: list[Any] = [
+        pa.field(col, _arrow_types[field_kinds[col]]) for col in property_cols
+    ]
+    schema_fields.append(pa.field("wkb_geometry", pa.binary()))
+    arrow_schema = pa.schema(schema_fields)
+
+    # ------------------------------------------------------------------
+    # Write in bounded batches using WritePyArrow.
+    # Each batch is a RecordBatch slice of at most _ARROW_BATCH_SIZE rows.
+    # ------------------------------------------------------------------
+    n = len(valid_idx)
+    for batch_start in range(0, n, _ARROW_BATCH_SIZE):
+        batch_end = min(batch_start + _ARROW_BATCH_SIZE, n)
+        batch_cols: dict[str, Any] = {
+            col: col_arrow_arrs[col][batch_start:batch_end]
+            for col in [*property_cols, "wkb_geometry"]
+        }
+        batch = pa.record_batch(batch_cols, schema=arrow_schema)
+        lyr.WritePyArrow(batch)
 
 
 def _shapely_geom_type_to_ogr(gdf: Any, ogr: Any) -> int:

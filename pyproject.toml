@@ -10,6 +10,7 @@ dependencies = [
     "geopandas>=1.0",
     "numpy>=1.24",
     "pandas>=2.0",
+    "pyarrow>=14.0",
     "shapely>=2.0",
     "pmtiles>=3.3,<4",
 ]

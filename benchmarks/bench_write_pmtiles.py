@@ -16,6 +16,9 @@ driver and geopandas installed)::
     # Scale selection (skip large scales for a fast sanity check)
     python benchmarks/bench_write_pmtiles.py --fast
 
+    # Add Arrow batch-size comparison (several batch sizes at a fixed scale)
+    python benchmarks/bench_write_pmtiles.py --batch-sizes
+
 Output columns
 --------------
 scale       : number of input point features
@@ -24,6 +27,9 @@ wall_s      : median wall-clock time in seconds (3 timed runs after 1 warm-up)
 peak_mb     : tracemalloc peak memory in MiB for the first timed run
 archive_kb  : compressed PMTiles archive size in KiB
 tile_count  : number of tiles in the archive (from PMTiles header)
+
+Batch-size comparison output adds:
+batch       : Arrow batch size used for the run
 
 Interpreting results
 --------------------
@@ -60,6 +66,7 @@ except ImportError as exc:
     sys.exit(f"geopandas / shapely not available: {exc}")
 
 try:
+    import geodataframe_to_pmtiles._writer as _writer_mod
     from geodataframe_to_pmtiles import write
 except ImportError as exc:
     sys.exit(f"geodataframe_to_pmtiles not installed: {exc}")
@@ -188,6 +195,51 @@ def _run_bytesio(gdf: gpd.GeoDataFrame, tmp: Path) -> tuple[float, float, int, i
 
 
 # ---------------------------------------------------------------------------
+# Batch-size comparison runner
+# ---------------------------------------------------------------------------
+
+#: Arrow batch sizes to compare.  Covers sub-chunk, standard chunk (64 Ki),
+#: and super-chunk configurations.
+_BATCH_SIZES = [4_096, 16_384, 65_536, 262_144]
+
+#: Scale used for the batch-size comparison (large enough to span batches).
+_BATCH_COMPARE_SCALE = 50_000
+
+
+def _run_path_with_batch(
+    gdf: gpd.GeoDataFrame,
+    tmp: Path,
+    batch_size: int,
+) -> tuple[float, float, int, int]:
+    """Benchmark Path output with a specific Arrow batch size."""
+    original = _writer_mod._ARROW_BATCH_SIZE
+    _writer_mod._ARROW_BATCH_SIZE = batch_size
+    try:
+        out = tmp / f"batch_{batch_size}.pmtiles"
+        # warm-up
+        write({"pts": gdf[:10]}, out, on_overflow="unsafe")
+
+        times: list[float] = []
+        peak_mb = 0.0
+        for i in range(_REPEATS):
+            tracemalloc.start()
+            t0 = time.perf_counter()
+            write({"pts": gdf}, out, on_overflow="unsafe")
+            wall = time.perf_counter() - t0
+            _cur, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            times.append(wall)
+            if i == 0:
+                peak_mb = peak / 1024**2
+
+        archive_kb = out.stat().st_size // 1024
+        ntiles = count_tiles(out)
+        return statistics.median(times), peak_mb, archive_kb, ntiles
+    finally:
+        _writer_mod._ARROW_BATCH_SIZE = original
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -196,6 +248,10 @@ _SCALES_FAST = [1_000, 10_000]
 
 _HEADER = (
     f"{'scale':>8}  {'output':>7}  {'wall_s':>7}  "
+    f"{'peak_mb':>8}  {'archive_kb':>11}  {'tile_count':>10}"
+)
+_BATCH_HEADER = (
+    f"{'scale':>8}  {'batch':>8}  {'wall_s':>7}  "
     f"{'peak_mb':>8}  {'archive_kb':>11}  {'tile_count':>10}"
 )
 _SEP = "-" * len(_HEADER)
@@ -207,6 +263,13 @@ def main() -> None:
         "--fast",
         action="store_true",
         help="Only run the two smallest scales (faster CI-friendly mode).",
+    )
+    parser.add_argument(
+        "--batch-sizes",
+        action="store_true",
+        help=(
+            f"Add an Arrow batch-size comparison at {_BATCH_COMPARE_SCALE:,} features."
+        ),
     )
     args = parser.parse_args()
 
@@ -224,6 +287,22 @@ def main() -> None:
                 tile_str = str(ntiles) if ntiles >= 0 else "n/a"
                 print(
                     f"{n:>8,}  {label:>7}  {wall:>7.3f}  "
+                    f"{peak:>8.1f}  {kb:>11,}  {tile_str:>10}"
+                )
+
+        if args.batch_sizes:
+            print()
+            print(
+                f"Arrow batch-size comparison  (scale={_BATCH_COMPARE_SCALE:,}, Path output)"
+            )
+            print(_BATCH_HEADER)
+            print(_SEP)
+            gdf = make_point_gdf(_BATCH_COMPARE_SCALE)
+            for bs in _BATCH_SIZES:
+                wall, peak, kb, ntiles = _run_path_with_batch(gdf, tmp, bs)
+                tile_str = str(ntiles) if ntiles >= 0 else "n/a"
+                print(
+                    f"{_BATCH_COMPARE_SCALE:>8,}  {bs:>8,}  {wall:>7.3f}  "
                     f"{peak:>8.1f}  {kb:>11,}  {tile_str:>10}"
                 )
 
