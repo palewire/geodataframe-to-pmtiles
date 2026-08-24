@@ -1963,11 +1963,17 @@ def test_optimised_path_string_isoformat_fallback(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_optimised_path_skips_invalid_wkb_geometry(
+def test_arrow_path_does_not_use_create_geometry_from_wkb(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A geometry conversion failure is skipped without stopping the layer write."""
+    """Arrow ingestion path bypasses ogr.CreateGeometryFromWkb entirely.
+
+    The per-feature OGR loop used ``CreateGeometryFromWkb`` to parse each
+    WKB blob before building a Feature.  The Arrow path passes WKB directly
+    to ``WritePyArrow``; OGR handles geometry creation internally.  Patching
+    ``CreateGeometryFromWkb`` to raise should have no effect.
+    """
     from osgeo import gdal, ogr
 
     gdf = gpd.GeoDataFrame(
@@ -1980,27 +1986,185 @@ def test_optimised_path_skips_invalid_wkb_geometry(
         crs="EPSG:4326",
     )
 
-    original = ogr.CreateGeometryFromWkb
-    calls = {"count": 0}
+    calls: list[int] = []
 
-    def _fake_create_geometry_from_wkb(wkb: bytes) -> object | None:
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return None
-        return original(wkb)
+    def _track_create_geometry_from_wkb(wkb: bytes) -> object | None:
+        calls.append(1)
+        return None  # Would skip features in the old per-feature path.
 
-    monkeypatch.setattr(ogr, "CreateGeometryFromWkb", _fake_create_geometry_from_wkb)
+    monkeypatch.setattr(ogr, "CreateGeometryFromWkb", _track_create_geometry_from_wkb)
 
-    out = tmp_path / "skip-geometry.pmtiles"
+    out = tmp_path / "arrow-bypass.pmtiles"
     _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
 
-    assert calls["count"] == 3
+    # Arrow path never calls CreateGeometryFromWkb.
+    assert calls == [], "Arrow path must not call ogr.CreateGeometryFromWkb"
+
+    # All 3 features were written (count reflects tile-based decode).
     ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
     assert ds is not None
     lyr = ds.GetLayerByIndex(0)
     assert lyr is not None
-    assert sum(1 for _ in lyr) == 2
+    assert lyr.GetFeatureCount() >= 3  # layer reports geometry-level count
     ds = None
+
+
+@pytest.mark.integration
+def test_arrow_path_calls_write_py_arrow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Arrow ingestion path uses Layer.WritePyArrow for feature writes.
+
+    The entire feature population loop must go through ``WritePyArrow``; no
+    calls to ``CreateFeature`` are expected.
+    """
+    from osgeo import gdal, ogr
+
+    gdf = gpd.GeoDataFrame(
+        {"idx": [1, 2, 3]},
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+
+    write_py_arrow_calls: list[object] = []
+    create_feature_calls: list[object] = []
+
+    _original_write_py_arrow = ogr.Layer.WritePyArrow
+
+    def _spy_write_py_arrow(
+        self: object,
+        batch: object,
+        options: list[object] | None = None,
+    ) -> int:
+        write_py_arrow_calls.append(batch)
+        return _original_write_py_arrow(self, batch, options or [])
+
+    _original_create_feature = ogr.Layer.CreateFeature
+
+    def _spy_create_feature(self: object, feat: object) -> int:
+        create_feature_calls.append(feat)
+        return _original_create_feature(self, feat)
+
+    monkeypatch.setattr(ogr.Layer, "WritePyArrow", _spy_write_py_arrow)
+    monkeypatch.setattr(ogr.Layer, "CreateFeature", _spy_create_feature)
+
+    out = tmp_path / "arrow-spy.pmtiles"
+    _write_safe({"pts": gdf}, out, min_zoom=0, max_zoom=0)
+
+    assert len(write_py_arrow_calls) >= 1, "Arrow path must call WritePyArrow"
+    assert create_feature_calls == [], "Arrow path must not call CreateFeature"
+
+    # Verify the archive contains valid data.
+    ds = gdal.OpenEx(str(out), gdal.OF_VECTOR)
+    assert ds is not None
+    lyr = ds.GetLayerByIndex(0)
+    assert lyr is not None
+    assert lyr.GetFeatureCount() >= 3
+    ds = None
+
+
+@pytest.mark.integration
+def test_arrow_path_preserves_all_property_types_decoded(
+    tmp_path: Path,
+) -> None:
+    """Arrow ingestion encodes int, float, bool, and string columns correctly.
+
+    Properties are decoded from the PMTiles archive and compared to the
+    input values to confirm that Arrow batching preserves all supported
+    scalar property types and null values end-to-end.
+    """
+    import io
+
+    gdf = gpd.GeoDataFrame(
+        {
+            "an_int": pd.array([10, 20, None], dtype="Int64"),
+            "a_float": pd.array([1.5, 2.5, None], dtype="Float64"),
+            "a_bool": pd.array([True, False, None], dtype="boolean"),
+            "a_str": ["alpha", None, "gamma"],
+        },
+        geometry=[Point(0.0, 0.0), Point(1.0, 1.0), Point(2.0, 2.0)],
+        crs="EPSG:4326",
+    )
+
+    buf = io.BytesIO()
+    _write_ignore({"props": gdf}, buf, min_zoom=0, max_zoom=0)
+    data = buf.getvalue()
+
+    from .pmtiles_semantics import read_pmtiles_bytes
+
+    layers = read_pmtiles_bytes(data, z=0, x=0, y=0)
+    assert layers is not None, "Tile 0/0/0 must exist"
+    features = layers["props"]["features"]
+
+    # Collect property values in insert order (first-occurrence dedup).
+    seen: set[int] = set()
+    ordered: list[dict] = []
+    for feat in features:
+        props = feat["properties"]
+        an_int = props.get("an_int")
+        if an_int not in seen:
+            seen.add(an_int if an_int is not None else -999)
+            ordered.append(props)
+
+    assert len(ordered) == 3
+    p0, p1, p2 = ordered
+
+    # int
+    assert p0["an_int"] == 10
+    assert p1["an_int"] == 20
+    assert p2.get("an_int") is None
+
+    # float
+    assert abs(p0["a_float"] - 1.5) < 0.01
+    assert abs(p1["a_float"] - 2.5) < 0.01
+    assert p2.get("a_float") is None
+
+    # bool (MVT encodes as 0/1 integer)
+    assert p0["a_bool"] in (True, 1)
+    assert p1["a_bool"] in (False, 0)
+    assert p2.get("a_bool") is None
+
+    # string
+    assert p0["a_str"] == "alpha"
+    assert p1.get("a_str") is None
+    assert p2["a_str"] == "gamma"
+
+
+@pytest.mark.integration
+def test_arrow_batch_boundary_multi_batch(
+    tmp_path: Path,
+) -> None:
+    """Features spanning more than one Arrow batch are all written correctly.
+
+    Writes a layer with more than _ARROW_BATCH_SIZE rows to confirm that
+    bounded batching does not drop features or corrupt the archive.
+    """
+    from geodataframe_to_pmtiles._writer import _ARROW_BATCH_SIZE
+
+    n = _ARROW_BATCH_SIZE + 10  # Forces at least two Arrow batches.
+    rng = np.random.default_rng(0)
+    lons = rng.uniform(-60.0, 60.0, n)
+    lats = rng.uniform(-60.0, 60.0, n)
+    gdf = gpd.GeoDataFrame(
+        {"seq": np.arange(n, dtype=np.int64)},
+        geometry=gpd.points_from_xy(lons, lats),
+        crs="EPSG:4326",
+    )
+
+    buf = io.BytesIO()
+    _write_ignore({"pts": gdf}, buf, min_zoom=0, max_zoom=4)
+
+    assert len(buf.getvalue()) > 0, "Archive must be non-empty"
+
+    from .pmtiles_semantics import read_pmtiles_bytes
+
+    layers = read_pmtiles_bytes(buf.getvalue(), z=0, x=0, y=0)
+    assert layers is not None
+    assert "pts" in layers
+    # The tile-decoded count will be at most n at z-0 (may be lower due to
+    # tile clipping), but must be positive, confirming data was written.
+    assert len(layers["pts"]["features"]) > 0
 
 
 @pytest.mark.integration

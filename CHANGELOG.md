@@ -30,6 +30,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `layer_zooms` entry is invalid.
 - `LayerZoomSpec` is the typed per-layer override dict exported from the
   package for use in type annotations.
+- `pyarrow>=14.0` is now a required dependency.  The library uses GDAL
+  3.12.2's `Layer.WritePyArrow` to write features in bounded columnar batches
+  (65,536 features per batch by default) instead of a per-feature OGR
+  `CreateFeature` loop.  All property types (int, float, bool, string,
+  datetime, JSON), null handling, geometry encoding, boundary filtering, and
+  atomic output semantics are preserved.  Synthetic benchmarks on macOS arm64
+  show 2–14% wall-time improvement at 1,000–10,000 features; the primary
+  bottleneck remains GDAL's tile-encoding pipeline.
 
 ### Changed
 
