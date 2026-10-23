@@ -10,7 +10,7 @@ Install from PyPI:
 pip install geodataframe-to-pmtiles
 ```
 
-Writing an archive also requires a native GDAL runtime with the PMTiles driver.
+Writing populated layers also requires a native GDAL runtime with the PMTiles driver.
 Install GDAL separately with conda-forge, Homebrew, or your operating system's
 package manager before writing archives.
 
@@ -81,7 +81,7 @@ form.
 
 | Option | Description |
 | --- | --- |
-| `layers` | A single `GeoDataFrame`, or a non-empty mapping of string layer names to `GeoDataFrame` objects. Every frame must be non-empty and have an explicit, resolvable CRS. |
+| `layers` | A single `GeoDataFrame`, or a non-empty mapping of string layer names to `GeoDataFrame` objects. Every frame must have an explicit, resolvable CRS. Empty frames are supported. |
 | `output` | A string or `Path` destination, or a binary-writable stream such as `BytesIO`. Path output is written to a temporary file and atomically replaces the destination only on success. |
 | `layer` | Required for a single GeoDataFrame and omitted for a mapping. It must be a non-empty string without null characters. |
 | `min_zoom` | Archive-wide minimum zoom, from 0 through 22; defaults to `0` and cannot exceed `max_zoom`. |
@@ -143,7 +143,7 @@ to GDAL for clipping.
 The principal exceptions are `MissingCRSError` for a GeoDataFrame without a
 CRS, `UnsupportedCRSError` or `CRSTransformError` for reprojection failures,
 `UnsupportedPropertyTypeError` for values that cannot be written as MVT
-properties, `EmptyLayerError` for empty layers, `TileOverflowError` for a
+properties, `EmptyLayerError` for an empty mapping or nonempty layers with no usable geometries, `TileOverflowError` for a
 detected safe-overflow rejection, and `InvalidLayerZoomError` for invalid
 `layer_zooms` entries.
 

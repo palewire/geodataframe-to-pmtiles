@@ -156,7 +156,7 @@ values.
 
 | Exception | When raised |
 |---|---|
-| `EmptyLayerError` | `layers` is empty or a GDF has no features. |
+| `EmptyLayerError` | The layers mapping is empty, or a nonempty GDF has no usable geometries. |
 | `MissingCRSError` | A GDF has no CRS set (explicit source CRS required). |
 | `UnsupportedCRSError` | A GDF's CRS definition cannot be resolved by the installed stack (chained from root cause). |
 | `CRSTransformError` | Coordinate transformation to EPSG:4326 failed at runtime (chained from root cause). |
