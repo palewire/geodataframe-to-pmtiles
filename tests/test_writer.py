@@ -808,12 +808,12 @@ def test_attribution_invalid_type_raises() -> None:
 
 
 @pytest.mark.unit
-def test_inject_attribution_unit() -> None:
-    """_inject_attribution patches metadata without touching tile payloads (no GDAL needed)."""
+def test_inject_metadata_unit() -> None:
+    """_inject_metadata patches metadata without touching tile payloads (no GDAL needed)."""
     from pmtiles.reader import MemorySource, Reader, all_tiles
     from pmtiles.tile import zxy_to_tileid
 
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     metadata = {
         "name": "unit-test",
@@ -835,7 +835,7 @@ def test_inject_attribution_unit() -> None:
     assert "attribution" not in original_meta
 
     # Inject attribution.
-    patched = _inject_attribution(original, "© Unit Test Ünïcödé")
+    patched = _inject_metadata(original, {"attribution": "© Unit Test Ünïcödé"})
     patched_reader = Reader(MemorySource(patched))
     patched_header = patched_reader.header()
 
@@ -1151,7 +1151,7 @@ def test_attribution_preserves_leaf_directory_layout() -> None:
     from pmtiles.reader import MemorySource, Reader, all_tiles
     from pmtiles.tile import zxy_to_tileid
 
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     original = _build_pmtiles_archive(
         [
@@ -1165,7 +1165,7 @@ def test_attribution_preserves_leaf_directory_layout() -> None:
     original_meta = original_reader.metadata()
     assert original_header["leaf_directory_length"] > 0
 
-    patched = _inject_attribution(original, "Leaf attribution")
+    patched = _inject_metadata(original, {"attribution": "Leaf attribution"})
     patched_reader = Reader(MemorySource(patched))
     patched_header = patched_reader.header()
 
@@ -1210,7 +1210,7 @@ def test_attribution_preserves_duplicate_tile_entries() -> None:
     from pmtiles.reader import MemorySource, Reader, all_tiles
     from pmtiles.tile import zxy_to_tileid
 
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     original = _build_pmtiles_archive(
         [(zxy_to_tileid(5, i, 0), b"payload") for i in range(20)],
@@ -1221,7 +1221,7 @@ def test_attribution_preserves_duplicate_tile_entries() -> None:
     original_meta = original_reader.metadata()
     assert original_header["tile_contents_count"] == 1
 
-    patched = _inject_attribution(original, "Duplicate attribution")
+    patched = _inject_metadata(original, {"attribution": "Duplicate attribution"})
     patched_reader = Reader(MemorySource(patched))
     patched_header = patched_reader.header()
 
@@ -1257,12 +1257,12 @@ def test_attribution_preserves_duplicate_tile_entries() -> None:
 
 
 @pytest.mark.unit
-def test_inject_attribution_handles_raw_metadata() -> None:
-    """_inject_attribution also works when metadata is stored as raw JSON."""
+def test_inject_metadata_handles_raw_metadata() -> None:
+    """_inject_metadata also works when metadata is stored as raw JSON."""
     from pmtiles.reader import MemorySource, Reader, all_tiles
     from pmtiles.tile import Compression, zxy_to_tileid
 
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     original = _build_pmtiles_archive(
         [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
@@ -1279,7 +1279,7 @@ def test_inject_attribution_handles_raw_metadata() -> None:
     assert original_header["internal_compression"] == Compression.NONE
     original_meta = original_reader.metadata()
 
-    patched = _inject_attribution(raw_original, "Raw attribution")
+    patched = _inject_metadata(raw_original, {"attribution": "Raw attribution"})
     patched_reader = Reader(MemorySource(patched))
     patched_header = patched_reader.header()
 
@@ -1294,12 +1294,12 @@ def test_inject_attribution_handles_raw_metadata() -> None:
 
 
 @pytest.mark.unit
-def test_inject_attribution_rejects_unsupported_metadata_compression() -> None:
-    """_inject_attribution refuses archives it cannot rewrite safely."""
+def test_inject_metadata_rejects_unsupported_metadata_compression() -> None:
+    """_inject_metadata refuses archives it cannot rewrite safely."""
     from pmtiles.reader import MemorySource, Reader
     from pmtiles.tile import Compression, serialize_header, zxy_to_tileid
 
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     original = _build_pmtiles_archive(
         [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
@@ -1326,18 +1326,18 @@ def test_inject_attribution_rejects_unsupported_metadata_compression() -> None:
     )
 
     with pytest.raises(RuntimeError, match="metadata compression"):
-        _inject_attribution(unsupported.getvalue(), "Unsupported")
+        _inject_metadata(unsupported.getvalue(), {"attribution": "Unsupported"})
 
 
 @pytest.mark.unit
-def test_inject_attribution_gzip_output_is_deterministic(
+def test_inject_metadata_gzip_output_is_deterministic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Repeated gzip rewrites stay byte-identical even if the clock changes."""
     from pmtiles.tile import zxy_to_tileid
 
     from geodataframe_to_pmtiles import _writer as writer_module
-    from geodataframe_to_pmtiles._writer import _inject_attribution
+    from geodataframe_to_pmtiles._writer import _inject_metadata
 
     original = _build_pmtiles_archive(
         [(zxy_to_tileid(0, 0, 0), b"fake-mvt-tile-bytes-do-not-change")],
@@ -1347,8 +1347,8 @@ def test_inject_attribution_gzip_output_is_deterministic(
     times = iter([1_700_000_000, 1_700_000_123])
     monkeypatch.setattr(writer_module.gzip.time, "time", lambda: next(times))
 
-    first = _inject_attribution(original, "Deterministic attribution")
-    second = _inject_attribution(original, "Deterministic attribution")
+    first = _inject_metadata(original, {"attribution": "Deterministic attribution"})
+    second = _inject_metadata(original, {"attribution": "Deterministic attribution"})
 
     assert first == second
 
@@ -1504,11 +1504,17 @@ def test_empty_layers_dict_raises() -> None:
 
 
 @pytest.mark.unit
-def test_empty_geodataframe_raises() -> None:
-    """A layer with zero features raises EmptyLayerError."""
+def test_empty_geodataframe_writes() -> None:
+    """A layer with zero features writes a readable zero-tile archive."""
+    from pmtiles.reader import MemorySource, Reader
+
     empty = gpd.GeoDataFrame({"a": []}, geometry=[], crs="EPSG:4326")
-    with pytest.raises(EmptyLayerError):
-        write({"empty": empty}, io.BytesIO())
+    output = io.BytesIO()
+    write({"empty": empty}, output)
+    reader = Reader(MemorySource(output.getvalue()))
+    assert reader.header()["addressed_tiles_count"] == 0
+    assert reader.get(0, 0, 0) is None
+    assert reader.metadata()["vector_layers"][0]["id"] == "empty"
 
 
 @pytest.mark.unit

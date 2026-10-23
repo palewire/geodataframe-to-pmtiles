@@ -6,9 +6,9 @@ directly; no subprocesses are spawned and no temporary files are written to
 disk.  Intermediate data lives in GDAL's in-memory virtual filesystem
 (``/vsimem/``) for the duration of the call.
 
-The package imports without GDAL present.  ``write`` raises a clear
-``RuntimeError`` if the native GDAL runtime or PMTiles driver is unavailable at
-call time.
+The package imports without GDAL present.  Writing populated layers raises a clear ``RuntimeError`` if the native GDAL
+runtime or PMTiles driver is unavailable. Entirely empty maps are serialized
+directly without loading GDAL.
 
 .. rubric:: Property normalisation
 
@@ -205,6 +205,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Literal, TypedDict, overload
 
 import numpy as np
 
+from geodataframe_to_pmtiles._empty import EmptyArchive
 from geodataframe_to_pmtiles.exceptions import (
     CRSTransformError,
     EmptyLayerError,
@@ -466,6 +467,15 @@ def _infer_property_kind(
     cannot be normalised, respecting the ``json_field_names`` policy.
     """
     import pandas as pd
+
+    if series.empty:
+        if pd.api.types.is_bool_dtype(series.dtype):
+            return "bool"
+        if pd.api.types.is_integer_dtype(series.dtype):
+            return "int"
+        if pd.api.types.is_float_dtype(series.dtype):
+            return "float"
+        return "string"
 
     col_name = str(series.name)
     _missing = object()
@@ -820,8 +830,9 @@ def write(
         latter case).  Every GeoDataFrame must have an explicit, resolvable
         CRS.  GeoDataFrames not already in EPSG:4326 are automatically
         reprojected using traditional GIS X/Y axis order; inputs are never
-        mutated.  The mapping must not be empty, and no GeoDataFrame may be
-        empty.
+        mutated. The mapping must not be empty. Empty GeoDataFrames retain
+        their layer names, property types and zoom declarations. An entirely
+        empty map uses world Web Mercator bounds and contains no tiles.
     output:
         Destination for the archive.  A :class:`str` or
         :class:`pathlib.Path` (written through a temporary file in the same
@@ -932,7 +943,8 @@ def write(
         If *layers* is a :class:`~geopandas.GeoDataFrame` and *layer* is
         omitted, or if *layers* is a mapping and *layer* is provided.
     EmptyLayerError
-        If *layers* is empty or any GeoDataFrame has zero features.
+        If the layers mapping is empty, or a nonempty GeoDataFrame has no
+        usable geometries after filtering.
     MissingCRSError
         If any GeoDataFrame has no CRS set.
     UnsupportedCRSError
@@ -1016,6 +1028,10 @@ def write(
                     f"of type {type(key).__name__!r}."
                 )
                 raise TypeError(msg)
+            if not key.strip() or "\x00" in key:
+                raise TypeError(
+                    "Layer names must be non-empty strings without null characters."
+                )
 
     _write_impl(
         layers_mapping,
@@ -1064,12 +1080,6 @@ def _write_impl(
         if not isinstance(gdf, gpd.GeoDataFrame):
             msg = f"Layer '{layer_name}' is not a GeoDataFrame."
             raise TypeError(msg)
-        if gdf.empty:
-            msg = (
-                f"Layer '{layer_name}' contains no features.  "
-                "Empty layers are not permitted; omit the layer or supply data."
-            )
-            raise EmptyLayerError(msg)
         if gdf.crs is None:
             msg = (
                 f"Layer '{layer_name}' has no CRS.  "
@@ -1212,7 +1222,7 @@ def _write_impl(
                 UserWarning,
                 stacklevel=3,
             )
-        if not valid_row_indices:
+        if not valid_row_indices and not gdf.empty:
             msg = (
                 f"Layer '{layer_name}' has no valid features (non-null, non-empty, "
                 f"in-bounds) within the Web Mercator latitude extent "
@@ -1222,6 +1232,45 @@ def _write_impl(
                 msg += f" after excluding {out_of_bounds} out-of-bounds feature(s)"
             msg += ". Clip or drop the affected geometries before calling gpm.write."
             raise EmptyLayerError(msg)
+
+    empty_layers: list[dict[str, Any]] = []
+    field_types = {
+        "int": "Number",
+        "float": "Number",
+        "bool": "Boolean",
+        "string": "String",
+    }
+    for layer_name, gdf in wgs84_layers.items():
+        if gdf.empty:
+            layer_min, layer_max = effective_layer_zooms.get(
+                layer_name, (min_zoom, max_zoom)
+            )
+            empty_layers.append(
+                {
+                    "id": layer_name,
+                    "fields": {
+                        column: field_types[kind]
+                        for column, kind in field_kinds_by_layer[layer_name].items()
+                    },
+                    "minzoom": layer_min,
+                    "maxzoom": layer_max,
+                }
+            )
+    if len(empty_layers) == len(wgs84_layers):
+        metadata: dict[str, Any] = {"vector_layers": empty_layers}
+        metadata.update(
+            {
+                key: value
+                for key, value in (
+                    ("name", name),
+                    ("description", description),
+                    ("attribution", attribution),
+                )
+                if value
+            }
+        )
+        _write_output(output, EmptyArchive(metadata, min_zoom, max_zoom).to_bytes())
+        return
 
     # Import GDAL only after the pure-Python validation has succeeded.
     gdal, ogr, osr = _load_gdal_modules()
@@ -1266,6 +1315,8 @@ def _write_impl(
                 srs.ImportFromEPSG(4326)
 
                 for layer_name, gdf in wgs84_layers.items():
+                    if gdf.empty:
+                        continue
                     _write_layer(
                         ds,
                         layer_name,
@@ -1300,10 +1351,30 @@ def _write_impl(
     finally:
         gdal.Unlink(vsimem_path)
 
-    # Inject attribution into the metadata section when requested.
+    updates: dict[str, Any] = {}
     if attribution:
-        data = _inject_attribution(data, attribution)
+        updates["attribution"] = attribution
+    if empty_layers:
+        updates["vector_layers"] = empty_layers
+    if updates:
+        data = _inject_metadata(data, updates)
 
+    _write_output(output, data)
+
+
+def _write_output(output: Path | BinaryIO, data: bytes) -> None:
+    """Write an archive through the existing path or stream output policy.
+
+    Args:
+        output: Destination path or writable binary stream.
+        data: Complete archive bytes.
+
+    Returns:
+        None. Paths are replaced only after writing their complete contents.
+
+    Examples:
+        ``_write_output(Path("map.pmtiles"), data)``.
+    """
     if isinstance(output, Path):
         _write_path_atomic(output, data)
     elif isinstance(output, IOBase) or hasattr(output, "write"):
@@ -1321,35 +1392,19 @@ def _write_impl(
 # ---------------------------------------------------------------------------
 
 
-def _inject_attribution(raw: bytes, attribution: str) -> bytes:
-    """Return a new PMTiles archive with *attribution* set in the metadata.
+def _inject_metadata(raw: bytes, updates: dict[str, Any]) -> bytes:
+    """Update archive metadata while preserving every tile and directory byte.
 
-    The implementation uses the official ``pmtiles.reader`` and
-    ``pmtiles.tile`` APIs to parse and re-serialise only the metadata section.
-    All tile payloads, the root directory, and leaf directories are copied
-    verbatim from *raw*; no re-tiling occurs.
+    Args:
+        raw: Complete PMTiles v3 archive produced by GDAL.
+        updates: Metadata values to replace. Vector layer declarations are
+            appended to the existing populated layers.
 
-    The archive section layout is always::
+    Returns:
+        Complete archive with adjusted metadata offsets and unchanged tile data.
 
-        header (127 bytes) | root directory | metadata | leaf directories | tile data
-
-    When the new metadata length differs from the original, the
-    ``metadata_length``, ``leaf_directory_offset``, and ``tile_data_offset``
-    fields in the header are updated accordingly.  All other header fields
-    (bounds, center, zoom, compression, tile type, directory counts) are
-    preserved exactly.
-
-    Parameters
-    ----------
-    raw:
-        Raw bytes of a valid PMTiles v3 archive produced by GDAL.
-    attribution:
-        Non-empty attribution string to embed under the ``"attribution"`` key.
-
-    Returns
-    -------
-    bytes
-        Raw bytes of the updated PMTiles archive.
+    Examples:
+        ``_inject_metadata(raw, {"attribution": "Reuters"})``.
     """
     from typing import cast
 
@@ -1371,7 +1426,12 @@ def _inject_attribution(raw: bytes, attribution: str) -> bytes:
         raise RuntimeError(msg)
 
     metadata = json.loads(metadata_bytes)
-    metadata["attribution"] = attribution
+    updates = dict(updates)
+    if "vector_layers" in updates:
+        updates["vector_layers"] = (
+            metadata.get("vector_layers", []) + updates["vector_layers"]
+        )
+    metadata.update(updates)
 
     # Re-encode the metadata, preserving the original compression scheme.
     meta_json: bytes = json.dumps(metadata, ensure_ascii=False).encode("utf-8")

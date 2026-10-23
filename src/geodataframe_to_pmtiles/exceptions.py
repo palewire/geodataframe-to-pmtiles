@@ -11,7 +11,7 @@ class WritePMTilesError(Exception):
 
 
 class EmptyLayerError(WritePMTilesError):
-    """Raised when the layers mapping is empty or a layer has no features."""
+    """Raised for an empty layers mapping or nonempty layers with no usable geometry."""
 
 
 class MissingCRSError(WritePMTilesError):
