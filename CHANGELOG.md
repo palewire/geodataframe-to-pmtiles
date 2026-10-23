@@ -8,11 +8,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Empty GeoDataFrames now retain their layer names, typed fields and zoom
-  declarations. Entirely empty maps produce readable zero-tile PMTiles archives
-  with world Web Mercator bounds; mixed maps preserve empty-layer metadata.
-  Nonempty inputs with no usable geometries continue to raise an error.
-
 - `max_features` and `max_size` keyword arguments on `gpm.write()` expose
   GDAL's per-tile ``MAX_FEATURES`` and ``MAX_SIZE`` creation options as
   independently configurable, statically typed parameters.  Passing ``None``
@@ -48,6 +43,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Package metadata and repository documentation now link to the live
   single-page documentation site.
+
+## [0.5.0] - 2026-10-23
+
+### Added
+
+- Empty GeoDataFrames now retain their layer names, typed fields and zoom
+  declarations. Entirely empty maps produce readable zero-tile PMTiles archives
+  with world Web Mercator bounds; mixed maps preserve empty-layer metadata.
+  Nonempty inputs with no usable geometries continue to raise an error.
+
+### Changed
+
+- Mapping layer names now use the same nonempty, null-free validation as the
+  single-GeoDataFrame API.
 
 ## [0.1.0] - 2026-08-20
 
