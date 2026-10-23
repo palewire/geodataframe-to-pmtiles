@@ -204,27 +204,3 @@ make verify  # full suite: checks, tests, build, docs
 ```
 
 See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Empty maps
-
-Empty GeoDataFrames are valid inputs. Their layer names, field declarations and
-zoom limits remain in `vector_layers` metadata, including when other layers
-contain features. Numeric and boolean field types come from the empty columns'
-dtypes; string, object and date columns are declared as strings.
-
-An entirely empty map is a valid PMTiles v3 archive with no tiles. It uses world
-Web Mercator bounds, a center at longitude/latitude zero, and the requested zoom
-limits. It can replace a previously populated map without leaving old features
-at the same URL. No dummy features are inserted, and writing it does not require
-GDAL. A nonempty input whose geometries are all null, empty or outside Web
-Mercator still raises `EmptyLayerError`; this is not treated as an empty result.
-
-```python
-import io
-import geopandas as gpd
-from geodataframe_to_pmtiles import write
-
-empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
-output = io.BytesIO()
-write({"storms": empty, "selection": empty}, output)
-```
